@@ -4,7 +4,9 @@
 #include "page_guard.h"
 #include "material.h"
 #include <android/log.h>
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -12,6 +14,7 @@
 #include <unistd.h>
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO,"HyperGlass",__VA_ARGS__)
 namespace {
+std::atomic<bool> runtime_complete{false};
 using Dispatch=void(*)(uintptr_t*);Dispatch original_dispatch=nullptr;
 void export_dispatch(uintptr_t*r){
  uintptr_t mode=r[15];original_dispatch(r);
@@ -44,6 +47,7 @@ bool executable_mapping(uintptr_t base,const std::string&path,const Layout&layou
  return executable;
 }
 void find_images(){
+ if(std::all_of(images.begin(),images.end(),[](const ImageState&s){return s.base!=0;}))return;
  FILE*f=fopen("/proc/self/maps","re");if(!f)return;
  char line[1536],path[1024],permission[8];unsigned long begin,end,offset;
  std::vector<Mapping>maps;
@@ -98,5 +102,11 @@ extern "C" unsigned hg_runtime_tick(const char*phase){
  else if(rc<0&&rc!=last)LOG("Patch deferred rc=%d features=%u sites=%zu",rc,ready,batch.size());
  last=rc;
  if(rc>=0 && (ready&8))hg_install_resources();
+ bool all_attempted=std::all_of(images.begin(),images.end(),[](const ImageState&s){return s.attempted;});
+ bool snapshots_pending=(images[0].result.ready&2)&&(images[1].result.ready&2)&&!snapshots;
+ if(all_attempted&&!snapshots_pending&&(rc>=0||rc==-4))runtime_complete.store(true,std::memory_order_release);
  return rc>=0?ready:0;
+}
+extern "C" bool hg_runtime_complete(){
+ return runtime_complete.load(std::memory_order_acquire);
 }

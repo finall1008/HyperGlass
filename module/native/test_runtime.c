@@ -1,5 +1,6 @@
 #include "module.c"
 unsigned hg_runtime_tick(const char *phase){(void)phase;return 0;}
+bool hg_runtime_complete(void){return true;}
 bool hg_page_guard_ready(void){return true;}
 bool hg_protect_range(uintptr_t at,size_t n){return at&&n;}
 #include <sys/stat.h>
@@ -44,7 +45,11 @@ int main(void) {
   close(a);
   close(b);
   if (!resource("/product/media/theme/default/dynamicicons") ||
-      resource("/product/media/theme/default/icons") || launcher())
+      resource("/product/media/theme/default/icons") || launcher() ||
+      spawner())
+    return 4;
+  NativeAPI incomplete_api = {.version = 102, .hook = (Hook)1, .unhook = 0};
+  if (native_init(&incomplete_api) != 0)
     return 4;
   park_signal = SIGRTMAX - 4;
   struct sigaction sa = {0};

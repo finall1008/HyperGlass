@@ -65,8 +65,14 @@ static void export_frame(unsigned kind){
  assert(*(uintptr_t*)(block+0x48)==7&&hg::export_kind==0);
 }
 static unsigned buffer_releases=0,forwarded_callbacks=0;static bool empty_buffer=false;
+static unsigned hook_calls=0,unhook_calls=0,fail_hook_at=0;
 extern "C" void AHardwareBuffer_release(AHardwareBuffer*buffer){assert(buffer==(AHardwareBuffer*)0x1000);buffer_releases++;}
-extern "C" int hg_install_native_hook(void*,void*,void**){return -1;}
+extern "C" int hg_install_native_hook(void*target,void*,void**original){
+ if(!fail_hook_at)return -1;
+ if(++hook_calls==fail_hook_at)return -1;
+ *original=target;return 0;
+}
+extern "C" int hg_remove_native_hook(void*){unhook_calls++;return 0;}
 static AHardwareBuffer*get_buffer(uintptr_t,uintptr_t b,uintptr_t c,uintptr_t d,uintptr_t e,uintptr_t f,uintptr_t g,uintptr_t h,uintptr_t i,uintptr_t j,uintptr_t k){
  assert(b==2&&c==3&&d==4&&e==5&&f==6&&g==7&&h==8&&i==9&&j==10&&k==11);return empty_buffer?nullptr:(AHardwareBuffer*)0x1000;
 }
@@ -166,5 +172,9 @@ int main(){
  for(const auto&im:images)assert(im->disposed&&im->count==0);
  hg::materials.clear();hg::released(source);hg::released(keeper);hg::released(allocator_ref);
  for(const auto&r:resources)assert(r->destroyed&&r->freed&&r->control.owners==-1&&r->control.weak==-1);
- puts("PASS native GPU-copy ownership, producer overwrite isolation, GPU crop geometry, image/context lifetime, bounded pending exports, failure fallback, interleaved widget refresh isolation, stage restoration and independent stream startup filtering");
+ void*orig_a=nullptr,*orig_b=nullptr,*orig_c=nullptr;
+ const hg::HookSpec group[]={{0x1000,(void*)0x2000,&orig_a},{0x1020,(void*)0x2020,&orig_b},{0x1040,(void*)0x2040,&orig_c}};
+ fail_hook_at=3;assert(!hg::install_hook_group(group,3)&&hook_calls==3&&unhook_calls==2&&!orig_a&&!orig_b&&!orig_c);
+ hook_calls=unhook_calls=0;fail_hook_at=99;assert(hg::install_hook_group(group,3)&&hook_calls==3&&unhook_calls==0&&orig_a&&orig_b&&orig_c);
+ puts("PASS native GPU-copy ownership, producer overwrite isolation, GPU crop geometry, image/context lifetime, bounded pending exports, failure fallback, interleaved widget refresh isolation, stage restoration, independent stream startup filtering and transactional hook rollback");
 }

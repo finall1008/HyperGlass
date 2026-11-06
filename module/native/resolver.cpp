@@ -38,13 +38,18 @@ uint32_t Locator::resolve(size_t index){
  if(a.mode==5){
   uint32_t marker=resolve(size_t(a.dependency));if(!marker)return 0;std::set<uint64_t>destinations;
   for(const auto&s:image_.named(a.callee))destinations.insert(s.value);
-  for(const auto&owner:image_.named(a.owner)){
+  auto owners=image_.named(a.owner);
+  for(const auto&owner:owners){
    uint64_t end=image_.symbol_end(owner);if(marker<owner.value||marker>=end)continue;
    for(uint64_t pc=marker;pc+4<=end;pc+=4){uint32_t word=image_.word(pc);
     if((word&0xfc000000)==0x94000000&&destinations.count(branch_target(word,pc))){
      uint64_t result=pc+a.delta;if((image_.word(result)&a.masks[a.before])==(a.values[a.before]&a.masks[a.before]))exact.push_back(uint32_t(result));break;
     }
    }
+  }
+  if(owners.empty()||destinations.empty())for(uint64_t pc=marker,end=marker+0x200;pc+4<=end&&image_.executable(pc,4);pc+=4){
+   uint32_t word=image_.word(pc);if((word&0xfc000000)!=0x94000000||!image_.executable(branch_target(word,pc),4))continue;
+   uint64_t result=pc+a.delta;if((image_.word(result)&a.masks[a.before])==(a.values[a.before]&a.masks[a.before]))scan(a,result>=uint64_t(a.before)*4?result-uint64_t(a.before)*4:0,result+uint64_t(a.count-a.before)*4,exact,elastic);
   }
  }else if(a.mode==4){uint64_t pc=image_.import_stub(a.callee);if(pc)exact.push_back(uint32_t(pc));
  }else if(a.mode==1){
@@ -56,18 +61,28 @@ uint32_t Locator::resolve(size_t index){
   if(valid)exact.push_back(uint32_t(target));
  }else if(a.mode==2||a.mode==3){
   std::set<uint64_t>destinations;for(const auto&s:image_.named(a.callee))destinations.insert(s.value);
-  for(const auto&symbol:image_.named(a.owner))for(uint64_t pc=symbol.value,end=image_.symbol_end(symbol);pc+4<=end;pc+=4){
-   uint32_t w=image_.word(pc);if((w&0xfc000000)!=0x94000000)continue;uint64_t target=branch_target(w,pc);
-   if(a.mode==2){
-    if(!destinations.count(target)||pc<4||!image_.at(pc-4,12)||(image_.word(pc-4)&0xfff8001f)!=0x37200000||(image_.word(pc+4)&0xfff8001f)!=0x37200000)continue;
-    uint64_t result=pc+a.delta;if((image_.word(result)&a.masks[a.before])==(a.values[a.before]&a.masks[a.before]))exact.push_back(uint32_t(result));
-   }else{
-    if(!image_.at(target,12))continue;uint32_t first=image_.word(target),second=image_.word(target+4),third=image_.word(target+8);
-    if((first&0xff80001f)!=0xd2800002||(second&0xff80001f)!=0xf2800002||(third&0xfc000000)!=0x14000000)continue;
-    uint64_t tag=uint64_t(instruction_immediate(first))|(uint64_t((second>>5)&65535)<<(((second>>21)&3)*16));
-    if((tag&255)==0x1c&&int(((tag>>8)&15)*16)>=a.delta)exact.push_back(uint32_t(pc));
+  auto owners=image_.named(a.owner);
+  auto check_range=[&](uint64_t begin,uint64_t end,bool require_neighborhood){
+   for(uint64_t pc=begin;pc+4<=end;pc+=4){
+    uint32_t w=image_.word(pc);if((w&0xfc000000)!=0x94000000)continue;uint64_t target=branch_target(w,pc);
+    if(a.mode==2){
+     if((!destinations.empty()&&!destinations.count(target))||pc<4||!image_.at(pc-4,12)||(image_.word(pc-4)&0xfff8001f)!=0x37200000||(image_.word(pc+4)&0xfff8001f)!=0x37200000)continue;
+     uint64_t result=pc+a.delta;if((image_.word(result)&a.masks[a.before])!=(a.values[a.before]&a.masks[a.before]))continue;
+     if(require_neighborhood)scan(a,result>=uint64_t(a.before)*4?result-uint64_t(a.before)*4:0,result+uint64_t(a.count-a.before)*4,exact,elastic);
+     else exact.push_back(uint32_t(result));
+    }else{
+     if(!image_.at(target,12))continue;uint32_t first=image_.word(target),second=image_.word(target+4),third=image_.word(target+8);
+     if((first&0xff80001f)!=0xd2800002||(second&0xff80001f)!=0xf2800002||(third&0xfc000000)!=0x14000000)continue;
+     uint64_t tag=uint64_t(instruction_immediate(first))|(uint64_t((second>>5)&65535)<<(((second>>21)&3)*16));
+     if((tag&255)==0x1c&&int(((tag>>8)&15)*16)>=a.delta){
+      if(require_neighborhood)scan(a,pc>=uint64_t(a.before)*4?pc-uint64_t(a.before)*4:0,pc+uint64_t(a.count-a.before)*4,exact,elastic);
+      else exact.push_back(uint32_t(pc));
+     }
+    }
    }
-  }
+  };
+  for(const auto&symbol:owners)check_range(symbol.value,image_.symbol_end(symbol),false);
+  if(owners.empty()||(a.mode==2&&destinations.empty()))for(const auto&segment:image_.segments())if(segment.p_flags&PF_X)check_range(segment.p_vaddr,segment.p_vaddr+segment.p_filesz,true);
  }else{
   uint64_t qualified=0;if(a.qualifier>=0){uint32_t pc=resolve(size_t(a.qualifier));if(!pc)return 0;qualified=branch_target(image_.word(pc),pc);}
   auto functions=image_.named(a.owner);std::set<uint64_t>seen;for(const auto&s:functions)seen.insert(s.value);
@@ -240,6 +255,11 @@ bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolv
    memcpy(payloads[i].data(),config.data(),program.config_count*4);
   }
  }
+ if((ready&2)&&!strcmp(program.image,"libapp.so")){
+  for(const char*name:{"SfAnimIconCapture._buildLayersFromIconInfo","SfWindowAnimImplementor.prepareIconLayers"})if(!prefer_live_boundary(image,live,name,out.patches,out.diagnostic)){
+   ready&=~2u;out.diagnostic+="live icon boundary cache guard unresolved; ";break;
+  }
+ }
  for(size_t i=0;i<program.unit_count;i++){
   const auto&unit=program.units[i];if(!(ready&unit.group))continue;
   if(unit.shadow){
@@ -252,11 +272,8 @@ bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolv
   uintptr_t begin=locations[i]&~uintptr_t(page-1),end=(locations[i]+unit.size+page-1)&~uintptr_t(page-1);
   if(mprotect(reinterpret_cast<void*>(begin),end-begin,PROT_READ|PROT_EXEC)){ready&=~uint32_t(unit.group);out.diagnostic+="private adapter execute protection failed; ";}
  }
- if((ready&2)&&!strcmp(program.image,"libapp.so")){
-  for(const char*name:{"SfAnimIconCapture._buildLayersFromIconInfo","SfWindowAnimImplementor.prepareIconLayers"})if(!prefer_live_boundary(image,live,name,out.patches,out.diagnostic)){
-   ready&=~2u;out.diagnostic+="live icon boundary cache guard unresolved; ";break;
-  }
- }
+ bool shadow_used=false;for(size_t i=0;i<program.unit_count;i++)if(program.units[i].shadow&&(ready&program.units[i].group))shadow_used=true;
+ if(allocate&&out.shadow&&!shadow_used){munmap(reinterpret_cast<void*>(out.shadow),out.shadow_size);out.shadow=0;out.shadow_size=0;out.adapter_pages.clear();}
  out.patches.erase(std::remove_if(out.patches.begin(),out.patches.end(),[&](const Patch&p){return !(ready&p.group);}),out.patches.end());out.ready=ready;
  if(!error.empty())out.diagnostic+=error;
  return ready!=0;

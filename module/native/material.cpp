@@ -200,9 +200,18 @@ AHardwareBuffer*dequeue(uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d,uintptr_
  if(discard){AHardwareBuffer_release(buffer);return nullptr;}
  return buffer;
 }
-bool install_hook(uintptr_t target,void*replace,void**original){
- if(*original)return true;
- return target&&hg_install_native_hook((void*)target,replace,original)==0&&*original;
+struct HookSpec {uintptr_t target;void*replace;void**original;};
+bool install_hook_group(const HookSpec*specs,size_t count){
+ std::vector<size_t>installed;
+ for(size_t i=0;i<count;i++){
+  if(*specs[i].original)continue;
+  if(!specs[i].target||hg_install_native_hook((void*)specs[i].target,specs[i].replace,specs[i].original)!=0||!*specs[i].original){
+   for(size_t j=installed.size();j>0;--j){size_t k=installed[j-1];hg_remove_native_hook((void*)specs[k].target);*specs[k].original=nullptr;}
+   return false;
+  }
+  installed.push_back(i);
+ }
+ return true;
 }
 uintptr_t entry(const Program&program,const Resolved&result,uintptr_t base,const char*label){
  for(size_t i=0;i<program.unit_count;i++)if(!strcmp(program.units[i].label,label)){
@@ -242,12 +251,15 @@ bool install_material_hooks(uintptr_t base,const Program&program,const Resolved&
  buffer_contents=(BufferContents)entry(program,result,base,".material-buffer-contents");
  copy_host=(CopyHost)entry(program,result,base,".material-copy-host");
  if(!create_texture||!create_blit||!add_copy||!enqueue||!original_make_image||!buffer_contents||!copy_host)return false;
- bool ok=install_hook(entry(program,result,base,".material-raster"),(void*)material_raster,(void**)&original_raster)
-  &&install_hook(entry(program,result,base,".material-draw"),(void*)material_draw,(void**)&original_draw)
-  &&install_hook(entry(program,result,base,".material-bind"),(void*)material_bind,(void**)&original_bind)
-  &&install_hook(entry(program,result,base,".material-uniform"),(void*)material_uniform,(void**)&original_uniform)
-  &&install_hook(entry(program,result,base,".material-acquire"),(void*)material_acquire,(void**)&original_acquire)
-  &&install_hook(entry(program,result,base,".material-image-ready"),(void*)material_image_ready,(void**)&original_image_ready);
+ const HookSpec specs[]={
+  {entry(program,result,base,".material-raster"),(void*)material_raster,(void**)&original_raster},
+  {entry(program,result,base,".material-draw"),(void*)material_draw,(void**)&original_draw},
+  {entry(program,result,base,".material-bind"),(void*)material_bind,(void**)&original_bind},
+  {entry(program,result,base,".material-uniform"),(void*)material_uniform,(void**)&original_uniform},
+  {entry(program,result,base,".material-acquire"),(void*)material_acquire,(void**)&original_acquire},
+  {entry(program,result,base,".material-image-ready"),(void*)material_image_ready,(void**)&original_image_ready},
+ };
+ bool ok=install_hook_group(specs,sizeof(specs)/sizeof(specs[0]));
  static bool reported=false;if(ok&&!reported){reported=true;LOG("Native material capture ready: independent GPU backdrop, live foreground");}
  return ok;
 }
@@ -263,9 +275,12 @@ bool install_backdrop_stream_hooks(){
  auto symbol=[&](const char*name){auto found=image.named(name);uintptr_t target=0;for(const auto&s:found){uintptr_t value=base+s.value;bool mapped=false;for(const auto&m:executable)if(m.first<=value&&value+16<=m.second)mapped=true;if(!mapped)continue;if(target&&target!=value)return uintptr_t(0);target=value;}return target;};
  uintptr_t buffer=symbol("HyperSurfaceTexture_dequeueHardwareBuffer"),excluded=symbol("HyperSurfaceContext_initPassBlurWithExcluded"),orientation=symbol("HyperSurfaceContext_initPassBlurWithDisplayOrientation");
  if(!buffer||!excluded||!orientation)return false;
- bool ok=install_hook(buffer,(void*)dequeue,(void**)&original_dequeue)
-  &&install_hook(excluded,(void*)init_excluded,(void**)&original_init_excluded)
-  &&install_hook(orientation,(void*)init_orientation,(void**)&original_init_orientation);
+ const HookSpec specs[]={
+  {buffer,(void*)dequeue,(void**)&original_dequeue},
+  {excluded,(void*)init_excluded,(void**)&original_init_excluded},
+  {orientation,(void*)init_orientation,(void**)&original_init_orientation},
+ };
+ bool ok=install_hook_group(specs,sizeof(specs)/sizeof(specs[0]));
  static bool reported=false;if(ok&&!reported){reported=true;LOG("Backdrop stream hooks ready: per-stream startup buffer filtering");}
  return ok;
 }

@@ -309,6 +309,18 @@ size_t collectMadviseSlots(const RuntimeImage &image,
     return found;
 }
 
+bool restoreMadviseSlot(uintptr_t slot, void *oldValue) {
+    const int oldProtection = queryProtection(slot);
+    if (oldProtection == 0) return false;
+    const uintptr_t page = pageStart(slot);
+    if (mprotect(reinterpret_cast<void *>(page), pageSize(), oldProtection | PROT_WRITE) != 0) {
+        return false;
+    }
+    auto **pointer = reinterpret_cast<void **>(slot);
+    __atomic_store_n(pointer, oldValue, __ATOMIC_RELEASE);
+    return mprotect(reinterpret_cast<void *>(page), pageSize(), oldProtection) == 0;
+}
+
 bool patchMadviseSlot(uintptr_t slot, void **oldValue) {
     if (oldValue == nullptr) return false;
     const int oldProtection = queryProtection(slot);
@@ -321,8 +333,11 @@ bool patchMadviseSlot(uintptr_t slot, void **oldValue) {
     auto **pointer = reinterpret_cast<void **>(slot);
     *oldValue = __atomic_load_n(pointer, __ATOMIC_ACQUIRE);
     __atomic_store_n(pointer, reinterpret_cast<void *>(guardedMadvise), __ATOMIC_RELEASE);
-    const bool restored = mprotect(reinterpret_cast<void *>(page), pageSize(), oldProtection) == 0;
-    return restored;
+    if (mprotect(reinterpret_cast<void *>(page), pageSize(), oldProtection) != 0) {
+        __atomic_store_n(pointer, *oldValue, __ATOMIC_RELEASE);
+        return false;
+    }
+    return true;
 }
 
 bool ensureGuardLocked() {
@@ -340,9 +355,16 @@ bool ensureGuardLocked() {
     if (original == nullptr) return false;
     gOriginalMadvise.store(original, std::memory_order_release);
 
+    std::array<void *, kMaxMadviseSlots> oldValues{};
     for (size_t i = 0; i < slotCount; ++i) {
-        void *oldValue = nullptr;
-        if (!patchMadviseSlot(slots[i], &oldValue)) {
+        if (!patchMadviseSlot(slots[i], &oldValues[i])) {
+            for (size_t j = i; j > 0; --j) {
+                if (!restoreMadviseSlot(slots[j - 1], oldValues[j - 1])) {
+                    logLine(ANDROID_LOG_ERROR,
+                            "PAGE_GUARD failed to restore madvise slot=%p after installation failure",
+                            reinterpret_cast<void *>(slots[j - 1]));
+                }
+            }
             logLine(ANDROID_LOG_ERROR,
                     "PAGE_GUARD failed to patch HyperRT madvise slot=%p index=%zu/%zu failClosed=1",
                     reinterpret_cast<void *>(slots[i]), i + 1, slotCount);

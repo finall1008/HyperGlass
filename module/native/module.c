@@ -21,16 +21,18 @@
 #include <unistd.h>
 
 typedef int (*Hook)(void *, void *, void **);
+typedef int (*Unhook)(void *);
 typedef struct {
   uint32_t version;
   Hook hook;
-  int (*unhook)(void *);
+  Unhook unhook;
 } NativeAPI;
 typedef void (*Loaded)(const char *, void *);
 #define LOG(...)                                                               \
   __android_log_print(ANDROID_LOG_INFO, "HyperGlass", __VA_ARGS__)
 extern const unsigned char dynamic_start[], dynamic_end[];
 static Hook install_hook;
+static Unhook remove_hook;
 static atomic_int started, park_request, handler_active;
 static int park_signal;
 struct slot {
@@ -51,6 +53,12 @@ static int launcher(void) {
   ssize_t n = syscall(SYS_read, fd, name, sizeof(name) - 1);
   syscall(SYS_close, fd);
   return n > 0 && !strcmp(name, "com.miui.home");
+}
+static int spawner(void) {
+  char path[128] = {0};
+  ssize_t n = syscall(SYS_readlinkat, AT_FDCWD, "/proc/self/exe", path,
+                      sizeof(path) - 1);
+  return n > 0 && !strcmp(path, "/system_ext/bin/hyos_spawner");
 }
 static int resource(const char *path) {
   return path && !strcmp(path, "/product/media/theme/default/dynamicicons");
@@ -119,26 +127,44 @@ static FILE *fopen_hook(const char *path, const char *mode) {
   return real_fopen(path, mode);
 }
 int hg_install_native_hook(void *target,void *replacement,void **original){
- return install_hook && hg_protect_range((uintptr_t)target,32)?install_hook(target,replacement,original):-1;
+ if(!install_hook||!target||!replacement||!original||!hg_protect_range((uintptr_t)target,32))return -1;
+ *original=0;
+ int rc=install_hook(target,replacement,original);
+ if(rc||!*original){if(!rc&&remove_hook)remove_hook(target);*original=0;return -1;}
+ return 0;
+}
+int hg_remove_native_hook(void *target){
+ return remove_hook&&target?remove_hook(target):-1;
 }
 void hg_install_resources(void) {
   static int done;
   if(done || !hg_page_guard_ready()) return;
-  done = 1;
   if (!install_hook)
     return;
   struct entry {
     const char *name;
     void *replace;
     void **backup;
-  } entries[] = {{"open", (void *)open_hook, (void **)&real_open},
-                 {"openat", (void *)openat_hook, (void **)&real_openat},
-                 {"fopen", (void *)fopen_hook, (void **)&real_fopen}};
+    void *target;
+  } entries[] = {{"open", (void *)open_hook, (void **)&real_open, 0},
+                 {"openat", (void *)openat_hook, (void **)&real_openat, 0},
+                 {"fopen", (void *)fopen_hook, (void **)&real_fopen, 0}};
   for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i) {
-    void *p = dlsym(RTLD_DEFAULT, entries[i].name);
-    int rc = p ? hg_install_native_hook(p, entries[i].replace, entries[i].backup) : -1;
+    entries[i].target = dlsym(RTLD_DEFAULT, entries[i].name);
+    int rc = entries[i].target
+                 ? hg_install_native_hook(entries[i].target, entries[i].replace,
+                                          entries[i].backup)
+                 : -1;
     LOG("dynamicicons hook %s rc=%d", entries[i].name, rc);
+    if (rc) {
+      for (size_t j = i; j > 0; --j) {
+        hg_remove_native_hook(entries[j - 1].target);
+        *entries[j - 1].backup = 0;
+      }
+      return;
+    }
   }
+  done = 1;
 }
 static void park_handler(int sig) {
   (void)sig;
@@ -328,6 +354,8 @@ static void *worker(void *arg) {
   pthread_setname_np(pthread_self(), "hyperglass");
   for (;;) {
     unsigned ready = hg_runtime_tick("watch");
+    if (hg_runtime_complete())
+      break;
     usleep(ready ? 250000 : 10000);
   }
   return 0;
@@ -346,6 +374,8 @@ static void start(void) {
     return;
   }
   hg_runtime_tick("native-init");
+  if (hg_runtime_complete())
+    return;
   pthread_t thread;
   if (pthread_create(&thread, 0, worker, 0))
     LOG("Worker creation failed");
@@ -359,18 +389,24 @@ static void loaded(const char *name, void *handle) {
     return;
   const char *leaf = strrchr(name, '/');
   leaf = leaf ? leaf + 1 : name;
-  if (!strcmp(leaf, "libapp.so") || !strcmp(leaf, "librust_maml_sdk.so") || !strcmp(leaf,"libhyper_os_flutter.so"))
+  if (!strcmp(leaf, "libapp.so") || !strcmp(leaf, "librust_maml_sdk.so") ||
+      !strcmp(leaf, "libhyper_os_flutter.so") ||
+      !strcmp(leaf, "libhyper_surface_context.so"))
     hg_runtime_tick("library-loaded");
 }
 __attribute__((visibility("default"), used)) Loaded
 native_init(const NativeAPI *api) {
-  if (!api || !api->hook) {
+  if (!api || !api->hook || !api->unhook) {
     LOG("Native framework API unavailable");
     return 0;
   }
   install_hook = api->hook;
-  LOG("native_init pid=%d API=%u launcher=%d", getpid(), api->version,
-      launcher());
+  remove_hook = api->unhook;
+  int is_launcher = launcher(), is_spawner = spawner();
+  LOG("native_init pid=%d API=%u launcher=%d spawner=%d", getpid(),
+      api->version, is_launcher, is_spawner);
+  if (!is_launcher && !is_spawner)
+    return 0;
   start();
   return loaded;
 }
