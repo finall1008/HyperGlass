@@ -71,8 +71,8 @@ class Catalog:
    va=int(r['vaddr'],16);data=bytes.fromhex(r['replacement'])
    if va in skip or self.unit_at(va):continue
    group=1 if i<style_count else 2
-   if va in [0x10e5e00,0x173d854,0x10d4bc0,0xfc6748,0xfc7638,0xfc84a8,0x148083c,0x1480844,0x1480914,0x1480a00,0x1480b78]:group=4
-   control=va in [0x18c3a6c,0x1b147a4,0x148083c,0x1480844,0x1480a00,0x1480b78]
+   if va in [0x10e5e00,0xc42d84,0xc42e2c,0xc43c28,0xc43cb4,0x10e3798,0x1642578,0x163e208,0x163e2a8,0xf18508,0x10c57cc,0x10c6a60,0x10c7180,0x10e271c,0x12908f0,0x185ce78,0x185d4a0,0x173d854,0x10d4bc0,0xfc6748,0xfc7638,0xfc84a8,0x148083c,0x1480844,0x1480914,0x1480a00,0x1480b78]:group=4
+   control=va in [0x18c3a6c,0x1b147a4,0x148083c,0x1480844,0x1480a00,0x1480b78,0x185d4a0]
    anchor=self.model.add(va,frames=False if control else None,control=control)
    unit=Unit(r.get('reason',hex(va)),va,data,group,False,anchor,code_ranges=[(va,va+len(data))]);self.units.append(unit)
  def relocate(self):
@@ -125,7 +125,7 @@ class Catalog:
   # Replay current compiler frame slots and canonical empty-widget pool loads.
   if self.model.image.path.name!='libapp.so':return
   linked=ELFFile(open(EX/'transitions/capture.elf','rb'));syms={s.name:s['st_value']for s in linked.get_section_by_name('.symtab').iter_symbols()}
-  for symbol,reference,opcode in [('android_text_inline',0x10e5e00,0xf81d03a4),('bytes_gateway',0x1b15198,0x92802cf1),('android_empty_widget',0x113976c,0),('android_empty_widget',0x1139770,0),('source_tag_hero',0x1b13fa4,0),('source_tag_prefix',0x9ebd4c,0),('source_tag_prefix',0x9ebd50,0)]:
+  for symbol,reference,opcode in [('android_text_inline',0x10e5e00,0xf81d03a4),('android_spanned_text',0xc42d84,0),('android_hint_text',0x10e3798,0),('bytes_gateway',0x1b15198,0x92802cf1),('android_empty_widget',0x113976c,0),('android_empty_widget',0x1139770,0),('source_tag_hero',0x1b13fa4,0),('source_tag_prefix',0x9ebd4c,0),('source_tag_prefix',0x9ebd50,0)]:
    pc=syms[symbol];unit=self.unit_at(pc);assert unit
    old=struct.unpack('<I',self.model.image.read(reference,4))[0]
    positions=[]

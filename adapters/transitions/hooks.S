@@ -140,13 +140,35 @@ android_empty_widget:
 android_image_original:
  stp x29,x30,[x15,#-16]!
  b android_image_continue
-.global android_text_inline
+.global android_text_inline,android_spanned_text,android_hint_text,maml_text_color,maml_filter_color
 android_text_inline:
  // The existing frame boxes the Color at its original allocation PC.
  // Retain provider alpha, and normalize the foreground to white.
  orr w4,w4,#0xffffff
  stur x4,[x29,#-0x30]
  b android_text_continue
+android_spanned_text:
+ orr w3,w3,#0xffffff
+ stur x3,[x29,#-0x28]
+ b android_spanned_continue
+android_hint_text:
+ orr w0,w0,#0xffffff
+ stur x0,[x29,#-0x58]
+ b android_hint_continue
+maml_text_color:
+ fmov d0,#1.0
+ stur d0,[x0,#0xf]
+ stur d0,[x0,#0x17]
+ stur d0,[x0,#0x1f]
+ mov x4,x0
+ b maml_text_continue
+maml_filter_color:
+ fmov d0,#1.0
+ stur d0,[x0,#0xf]
+ stur d0,[x0,#0x17]
+ stur d0,[x0,#0x1f]
+ mov x3,x0
+ b maml_filter_continue
 .global android_background
 android_background:
  // Hide container backgrounds only from the shared paint-building phase.

@@ -189,6 +189,14 @@ for color in [0xff000000, 0xff808080, 0x7f22cc99, 0x00ffffff]:
  expected=color|0xffffff
  assert u.reg_read(regs[4])==expected and qi(u,0x2f9fd0)==expected
  assert all(u.reg_read(r)==saved[i]for i,r in enumerate(regs)if i!=4)
+ u,put=setup();u.reg_write(regs[3],color);execute(u,'android_spanned_text',0xc42d88)
+ assert u.reg_read(regs[3])==expected and qi(u,0x2f9fd8)==expected
+ u,put=setup();u.reg_write(regs[0],color);execute(u,'android_hint_text',0x10e379c)
+ assert u.reg_read(regs[0])==expected and qi(u,0x2f9fa8)==expected
+for label,resume,reg in [('maml_text_color',0x164257c,4),('maml_filter_color',0x163e20c,3)]:
+ u,put=setup();col=heap+0x25001;ds(u,col+7,[0.6,0.2,0.4,0.8]);u.reg_write(regs[0],col)
+ execute(u,label,resume)
+ assert struct.unpack('<4d',u.mem_read(col+7,32))==(0.6,1.0,1.0,1.0) and u.reg_read(regs[reg])==col
 for cid in [0x21f9,*range(0x21fa,0x2208),0x2208,0x2209]:
  for caller in [0x10b85cc,0x10b85e8,0x10b86e0,0x10b8be0,0x10ba404,0x400000]:
   u,put=setup();view=heap+0x20001;controller=heap+0x21001

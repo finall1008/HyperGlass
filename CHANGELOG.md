@@ -1,10 +1,10 @@
-# HyperGlass 1.0.2
+# HyperGlass 1.0.3
 
 使用 finall release 证书签名，支持覆盖升级。
 
-- 完善 LSPosed Modern API 102 集成：声明 `exceptionMode=protective`，开启 `extractNativeLibs="false"` 16KB 页对齐零拷贝映射，支持从管理器设置入口直接打开模块说明页，统一由 `native_init.list` 承载原生加载。
-- 识别 `hyos_spawner` 孵化期进程并在非目标进程中拒绝注册加载器回调；新增对 `libhyper_surface_context.so` 的加载回调触发，全部特性组就绪后退出后台观察线程。
-- 为 `madvise` 代码页保护槽位、动态图标资源 Hook 及材质/背景流 Hook 组增加原子回滚事务。
-- 增强无调试符号场景下的 ARM64 指令邻域与分配器 tag 退避扫描，并在私有跳板页未使用时自动回收虚拟内存映射。
+- 为 Android RemoteViews 小组件的图片、复合图标、矢量与形状背景（`GradientDrawable`、`ColorDrawable`、`VectorDrawableBox`）及 MAML 画布接入黑白灰度颜色矩阵滤镜。
+- 为富文本（`SpannedString`、`ForegroundColorSpan`）、提示文本（`textColorHint`）和 MAML 动态文本颜色及显式滤镜补齐单色白前景归一化，保留原有透明度。
+- 在无填充描边图形上保留透明内部，维持小组件毛玻璃背景、圆角裁剪与实时更新行为。
+- 增加多版本重定位与 ARM64 执行回归验证。
 
 作用域为系统桌面，需要支持 HyperOS Runtime 的 LSPosed / Vector、Modern API 102 和 native API 2。覆盖安装后重新加载系统桌面生效。

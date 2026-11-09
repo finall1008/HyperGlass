@@ -189,14 +189,23 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
  u.emu_start(address(symbols['result_gateway']),address(0x19c0058),count=4000000)
  assert bytes(u.mem_read(buffer,len(expected)))==expected and wi(u,array+0x13)==len(expected)*2
  assert qi(u,0x2fefe8)==array and qi(u,0x2fefd0)==171 and qi(u,0x2fefd8)==171
- # Relocated inline foreground hook replays the actual compiler's store slot.
- u=setup();u.reg_write(regs[4],0x7f22cc99)
- u.emu_start(address(symbols['android_text_inline']),address(0x10e5e00)+4,count=100)
- image=ELFFile(open(imagepath,'rb'));va=address(0x10e5e00)-base
- segment=next(s for s in image.iter_segments()if s['p_type']=='PT_LOAD'and s['p_vaddr']<=va<va+4<=s['p_vaddr']+s['p_filesz'])
- image.stream.seek(segment['p_offset']+va-segment['p_vaddr']);store=struct.unpack('<I',image.stream.read(4))[0]
- slot=(store>>12)&511;slot=slot-512 if slot&256 else slot
- assert qi(u,0x2fa000+slot)==0x7fffffff
+ # Relocated inline foreground hooks replay the actual compiler's store slots.
+ image=ELFFile(open(imagepath,'rb'))
+ for label,site,reg in [('android_text_inline',0x10e5e00,4),('android_spanned_text',0xc42d84,3),('android_hint_text',0x10e3798,0)]:
+  u=setup();u.reg_write(regs[reg],0x7f22cc99)
+  u.emu_start(address(symbols[label]),address(site)+4,count=100)
+  va=address(site)-base
+  segment=next(s for s in image.iter_segments()if s['p_type']=='PT_LOAD'and s['p_vaddr']<=va<va+4<=s['p_vaddr']+s['p_filesz'])
+  image.stream.seek(segment['p_offset']+va-segment['p_vaddr']);store=struct.unpack('<I',image.stream.read(4))[0]
+  slot=(store>>12)&511;slot=slot-512 if slot&256 else slot
+  assert qi(u,0x2fa000+slot)==0x7fffffff
+ for label,site,reg in [('maml_text_color',0x1642578,4),('maml_filter_color',0x163e208,3)]:
+  u=setup();col=heap+0x25001;ds(u,col+7,[0.6,0.2,0.4,0.8]);u.reg_write(regs[0],col)
+  u.emu_start(address(symbols[label]),address(site)+4,count=100)
+  assert struct.unpack('<4d',u.mem_read(col+7,32))==(0.6,1.0,1.0,1.0) and u.reg_read(regs[reg])==col
+ for site in [0xf18508,0x10c57cc,0x10c6a60,0x10c7180,0x12908f0,0x163e2a8,0x185ce78,0x10e271c]:
+  word=struct.unpack('<I',u.mem_read(address(site),4))[0]
+  assert branch_target(word,address(site))==address(0x17458e4)
  assert 7<=cfg[6]<2048 and cfg[6]%4==3
  fp=cfg[9]-(1<<32)if cfg[9]>>31 else cfg[9];assert -2048<=fp<0 and fp%8==0
  print('PASS native relocated viewport/crop, closing marker, vector ABI, compiler store replay:',Path(planpath).name,flush=True)
