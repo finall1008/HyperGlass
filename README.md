@@ -1,4 +1,4 @@
-# HyperGlass 1.0.3
+# HyperGlass 1.0.4
 
 HyperOS 系统桌面的 LSPosed 模块，提供单色玻璃图标、文件夹、动态日历和时钟，以及 MAML / Android 小组件样式。包名为 `dev.hyperglass.lsposed`，作用域为 `com.miui.home`。
 
@@ -6,9 +6,10 @@ HyperOS 系统桌面的 LSPosed 模块，提供单色玻璃图标、文件夹、
 
 ## 安装
 
-1. 从本仓库 Release 下载 `HyperGlass-LSPosed-1.0.3.apk` 并覆盖安装。
+1. 从本仓库 Release 下载 `HyperGlass-LSPosed-1.0.4.apk` 并覆盖安装。
 2. 在支持 HyperOS Runtime 注入的 LSPosed / Vector 中启用模块，作用域选择系统桌面。
-3. 重新加载系统桌面。停用、卸载后重新加载桌面可恢复系统渲染。
+3. 打开模块设置页，按需隐藏桌面图标；隐藏后从 LSPosed / Vector 的模块页面重新打开设置页。
+4. 重新加载系统桌面。停用、卸载后重新加载桌面可恢复系统渲染。
 
 框架需要 Modern API 102 与 native API 2。已验证 LSPosed 2.2.1 (7912) + Zygisk Next 加载链。使用旧 HyperGlass root helper 的设备先停用旧 helper。
 
