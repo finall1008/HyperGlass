@@ -52,6 +52,12 @@ with tempfile.TemporaryDirectory(prefix='hyperglass-xml-') as directory:
     assert tree.find('.//Text').get('color') == '#EFFFFFFF'
     assert tree.find('VariableBinders/ContentProviderBinder').get('uri') == 'content://test'
     assert tree.find('.//Command').get('target') == 'test'
+    photo = ET.fromstring(transform(b'<Widget><Image srcExp="@fallbackUrl" w="#view_width" h="#view_height"/>'
+                                    b'<Image srcExp="@srcForDisplay" srcType="Uri" w="#view_width" h="#view_height" visibility="#img1Vis" alpha="#img1Alpha"/>'
+                                    b'<Image srcExp="@cover" srcType="Uri" w="#view_width" h="#view_height"/></Widget>'))
+    plate, picture, cover = photo.findall('.//Image')
+    assert plate.get('visibility') == '0' and picture.get('visibility') == '#img1Vis'
+    assert picture.get('alpha') == '(#img1Alpha)*0.6' and cover.get('alpha') == '(255)*0.6' and plate.get('alpha') is None
     for fake in [b'<!-- <Rectangle w="1000" h="1000"/> -->',
                  b'<![CDATA[<Rectangle w="1000" h="1000"/>]]>']:
         assert transform(b'<Widget>' + fake + b'<Text text="Clock"/></Widget>') is None

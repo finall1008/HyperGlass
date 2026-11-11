@@ -211,7 +211,18 @@ for cid in [0x21f9,*range(0x21fa,0x2208),0x2208,0x2209]:
   else:assert u.reg_read(regs[2])==controller&0xffffffff
   assert all(u.reg_read(r)==saved[i]for i,r in enumerate(regs)if i not in [0,2,16,17])
   assert u.reg_read(R.UC_ARM64_REG_SP)==0x2ee000
-print('PASS: Android foreground alpha, paint-phase-only container background suppression, intact provider outlines and leaf decorations')
+# Provider pictures take the existing Opacity path at 0.6 of their own alpha;
+# resource drawables and hidden or opaque-by-default resources replay.
+for opacity,caller,outer,end,value in [(None,0x10c69f0,0,0x10c5940,0.6),(None,0x10c5778,0,0x10c5940,0.6),(None,0x10cfff0,0,0x10c5940,0.6),
+                                       (None,0x10d367c,0x10cdac0,0x10c5940,0.6),(0.5,0x10d367c,0x10cdac0,0x10c5940,0.3),(1.0,0x10cfff0,0,0x10c5940,0.6),(0.0,0x10c69f0,0,0x10c58dc,0.0),
+                                       (None,0x10d367c,0x10c7838,0x10c58cc,0.0),(None,0x10cbc68,0,0x10c58cc,0.0),(1.0,0x10d367c,0x10c7838,0x10c58dc,0.0)]:
+ u,put=setup();q(u,0x2fa008,caller);q(u,0x2fa000,0x2fb000);q(u,0x2fb008,outer);q(u,0x2f9ff0,0);boxed=heap+0x26001
+ if opacity is not None:ds(u,boxed+7,[opacity])
+ u.reg_write(regs[0],nil if opacity is None else boxed)
+ saved=[u.reg_read(r)for r in regs];execute(u,'android_image_opacity',end)
+ assert abs(struct.unpack('<d',u.mem_read(0x2f9ff0,8))[0]-value)<1e-12
+ assert all(u.reg_read(r)==saved[i]for i,r in enumerate(regs)if i not in [16,17])
+print('PASS: Android foreground alpha, paint-phase-only container background suppression, intact provider outlines and leaf decorations, translucent provider bitmaps')
 
 # Both host branches enter the existing Radius allocator with the live radius.
 for site,start,end,context_reg in [(0x1480a00,0x1480a20,0x1480a30,2),(0x1480b78,0x1480b98,0x1480ba8,0)]:

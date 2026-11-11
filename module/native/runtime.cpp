@@ -28,6 +28,17 @@ void export_dispatch(uintptr_t*r){
  uintptr_t peer=hg::image_peer(image,heap);
  hg::crop_export_image(peer,(mark>>12)&4095,mark&4095,unsigned(*(uintptr_t*)(image+15)),unsigned(*(uintptr_t*)(image+23)));
 }
+// Written by the module settings page into its shared media directory, which
+// the launcher reads with its storage access. Absent means the default (on).
+bool widget_monochrome(){
+ static int value=-1;
+ if(value<0){
+  value=1;FILE*f=fopen("/storage/emulated/0/Android/media/dev.hyperglass.lsposed/widget-monochrome","re");
+  if(f){value=fgetc(f)!='0';fclose(f);}
+  if(!value)LOG("Widget artwork keeps provider colors (monochrome off)");
+ }
+ return value;
+}
 struct ImageState { uintptr_t base=0;std::string path;hg::Resolved result;bool attempted=false; };
 std::array<ImageState,3> images;
 std::mutex mutex;
@@ -93,6 +104,7 @@ extern "C" unsigned hg_runtime_tick(const char*phase){
  for(size_t i=0;i<images.size();i++){
   const auto&r=images[i].result;unsigned enabled=r.ready;
   if(!snapshots)enabled&=~2u;
+  if(i==0&&(enabled&16)&&!widget_monochrome())enabled&=~16u;
   ready|=enabled;
   for(const auto&p:r.patches)if(p.group&enabled)batch.push_back(p);
  }

@@ -225,7 +225,7 @@ static H int visual(S n) {
 }
 static const char material[] D =
     "<MaterialToken tokenName=\"Glass_Stroke_Regular\" "
-    "version=\"30\"><GlassConfig token=\"Glass_Bionic_Medium_Regular\" "
+    "version=\"30\"><GlassConfig token=\"Glass_Bionic_Medium_Normal\" "
     "disableGlass=\"0\" rustPassWindow=\"true\"/><BloomStrokeConfig "
     "disableBloomStroke=\"0\" bloomStrokeWidth=\"#view_width\" "
     "bloomStrokeHeight=\"#view_height\" "
@@ -245,15 +245,24 @@ static const char material[] D =
     "radius=\"ifelse(#widget_radius,#widget_radius/#__scale_factor,60)\"/>";
 static const char layer[] D = "<Layer frameRate=\"-1\" w=\"#view_width\" "
                               "h=\"#view_height\" layerType=\"bottom\">";
+/* Package artwork that fills the card is its background plate. Images with a
+ * source type load provider content (photos, covers); they stay visible and
+ * translucent over the glass, keeping their own alpha animation. */
+static T int external(const char *p, const char *e) {
+  S t = attr(p, e, "srcType");
+  return t.p != t.e;
+}
 static H char *tag(char *d, const char *p, const char *e, S doc, int root) {
   S n = name(p, e);
   int text = same(n, "Text") || same(n, "DateTime"),
-      rect = same(n, "Rectangle"),
-      image = (same(n, "Image") &&
+      rect = same(n, "Rectangle"), picture = same(n, "Image"),
+      photo = picture && external(p, e),
+      image = (picture && !photo &&
                (full(p, e, doc) ||
                 (attr(p, e, "centerX").p != attr(p, e, "centerX").e &&
                  expression(attr(p, e, "h"), doc, 0) >= 950))) ||
               (rect && full(p, e, doc));
+  S alpha = attr(p, e, "alpha");
   d = copy(d, p, n.e);
   p = n.e;
   while (p < e) {
@@ -278,7 +287,7 @@ static H char *tag(char *d, const char *p, const char *e, S doc, int root) {
       p++;
     int omit =
         (text && same(a, "color")) || (rect && same(a, "fillColor")) ||
-        (image && same(a, "visibility")) ||
+        (image && same(a, "visibility")) || (photo && same(a, "alpha")) ||
         (root && (same(a, "version") || same(a, "supportBackgroundBlur") ||
                   same(a, "disableCutRoundCorner") ||
                   same(a, "customizedDarkModeWallpaper") ||
@@ -292,6 +301,11 @@ static H char *tag(char *d, const char *p, const char *e, S doc, int root) {
     d = str(d, " fillColor=\"#12FFFFFF\"");
   if (image)
     d = str(d, " visibility=\"0\"");
+  if (photo) {
+    d = str(d, " alpha=\"(");
+    d = alpha.p == alpha.e ? str(d, "255") : copy(d, alpha.p, alpha.e);
+    d = str(d, ")*0.6\"");
+  }
   if (root)
     d = str(d, " version=\"2\" supportBackgroundBlur=\"true\" "
                "disableCutRoundCorner=\"false\" specialShapeWidget=\"0\" "
@@ -425,7 +439,7 @@ T char *style_xml(const char *src, size_t len, size_t *out) {
   *out = (size_t)(d - mem);
   return mem;
 }
-static H long system_call(long nr, long a, long b, long c) {
+static T long system_call(long nr, long a, long b, long c) {
 #ifdef HOST_TEST
   (void)nr;
   (void)a;

@@ -169,6 +169,59 @@ maml_filter_color:
  stur d0,[x0,#0x1f]
  mov x3,x0
  b maml_filter_continue
+.section .widget_helpers,"ax"
+.global android_image_opacity
+android_image_opacity:
+ // _applyImageAlphaIfNeeded. Provider pictures (bitmap builders and Uri
+ // drawables) show the glass through them at 0.6 of their own alpha via the
+ // function's Opacity wrapper; the allocation and its return PC stay in the
+ // original Dart frame. Resource drawables keep their alpha.
+ ldr x17,[x29,#8]
+ adrp x16,center_crop_alpha_return
+ add x16,x16,:lo12:center_crop_alpha_return
+ cmp x17,x16
+ b.eq opacity_photo
+ adrp x16,fit_scaled_alpha_return
+ add x16,x16,:lo12:fit_scaled_alpha_return
+ cmp x17,x16
+ b.eq opacity_photo
+ adrp x16,bitmap_size_alpha_return
+ add x16,x16,:lo12:bitmap_size_alpha_return
+ cmp x17,x16
+ b.eq opacity_photo
+ adrp x16,drawable_alpha_return
+ add x16,x16,:lo12:drawable_alpha_return
+ cmp x17,x16
+ b.ne opacity_plain
+ ldr x17,[x29]
+ ldr x17,[x17,#8]
+ adrp x16,future_drawable_return
+ add x16,x16,:lo12:future_drawable_return
+ cmp x17,x16
+ b.eq opacity_photo
+opacity_plain:
+ cmp w0,w22
+ b.ne opacity_value_replay
+ b image_opacity_none
+opacity_photo:
+ mov x16,#0x3333
+ movk x16,#0x3333,lsl #16
+ movk x16,#0x3333,lsl #32
+ movk x16,#0x3fe3,lsl #48
+ fmov d1,x16
+ cmp w0,w22
+ b.eq opacity_store
+ ldur d2,[x0,#7]
+ fcmp d2,#0.0
+ b.le opacity_value_replay
+ b.vs opacity_value_replay
+ fmul d1,d1,d2
+opacity_store:
+ stur d1,[x29,#-0x10]
+ b image_opacity_wrap
+opacity_value_replay:
+ b image_opacity_value
+.section .text_color,"ax"
 .global android_background
 android_background:
  // Hide container backgrounds only from the shared paint-building phase.

@@ -45,7 +45,7 @@ symbols={s.name:s['st_value']for s in linked.get_section_by_name('.symtab').iter
 sites=[(0x1562730,'capture_transform'),(0xa02914,'root_gateway'),(0xa02928,'refresh_path'),(0x1562380,'force_path'),(0x1562434,'stop_after_path'),(0x1562124,'capture_image_filter'),(0x1563768,'capture_color_filter'),(0x1563970,'capture_shader_mask'),(0x15629c4,'capture_opacity'),(0x191a74c,'mark_floor'),(0x191a8b8,'mark_ceil'),(0x19c0040,'result_gateway'),(0x1b15198,'bytes_gateway'),(0xa1e608,'clone_pack'),(0xa1e634,'clone_unpack')]
 for va,name in sites:patch(va,branch(va,symbols[name]),'Keep wallpaper sampling in the full viewport; crop pixels before native SF drawing')
 patch(0x1b14734,branch(0x1b14734,symbols['source_controller_tag']),'Resolve recommendation icon controllers using the exact flight source identity')
-for va,name in [(0x10e5e00,'android_text_inline'),(0xc42d84,'android_spanned_text'),(0x10e3798,'android_hint_text'),(0x1642578,'maml_text_color'),(0x163e208,'maml_filter_color'),(0x173d854,'android_background'),(0x10d4bc0,'android_image_plate')]:patch(va,branch(va,symbols[name]),'Common Android widget content: monochrome text and structural background painting with provider outlines intact')
+for va,name in [(0x10e5e00,'android_text_inline'),(0xc42d84,'android_spanned_text'),(0x10e3798,'android_hint_text'),(0x1642578,'maml_text_color'),(0x163e208,'maml_filter_color'),(0x173d854,'android_background'),(0x10d4bc0,'android_image_plate'),(0x10c58c8,'android_image_opacity')]:patch(va,branch(va,symbols[name]),'Common Android widget content: monochrome text and structural background painting with provider outlines intact')
 patch(0xc42e2c,struct.pack('<I',0x92800021)+branch(0xc42e30,0xc42d74),'Default uncolored SpannedString roots to monochrome white')
 for va,opcode in [(0xc43c28,0x32185c01),(0xc43cb4,0x32185c40)]:patch(va,struct.pack('<I',opcode),'Normalize SpannedString ForegroundColorSpan RGB to white while retaining span alpha')
 for va in [0xf18508,0x10c57cc,0x10c6a60,0x10c7180,0x12908f0,0x163e2a8,0x185ce78]:patch(va,branch(va,0x17458e4,True),'Apply grayscale color-matrix filtering to widget ImageViews, Drawables and MAML canvas paints')
@@ -59,7 +59,7 @@ for va,target in [(0x1480a00,0x1480a20),(0x1480b78,0x1480b98)]:patch(va,branch(v
 previous_end=0
 for p in sorted(patches,key=lambda p:int(p['vaddr'],16)):
  va=int(p['vaddr'],16);data=bytes.fromhex(p['replacement']);assert len(data)<=256 and va>=previous_end,(p['vaddr'],previous_end);previous_end=va+len(data)
-assert len(patches)<=96,len(patches)
+assert len(patches)<=128,len(patches)
 profile['scope']='Native glass icons, common MAML and Android widget rendering, full-view SF snapshots; Launcher 7722'
 (H/'profile.json').write_text(json.dumps(profile,indent=2)+'\n')
 (H/'patches.txt').write_text(''.join(f"{p['vaddr']} {p['expected']} {p['replacement']}\n"for p in patches))

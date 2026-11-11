@@ -17,12 +17,12 @@ old=REFS/'launcher-801027722/libapp.so';new=REFS/'launcher-801029226/MiuiHome.ap
 run(sys.executable,H/'adaptive/make_future_fixture.py',old,OUT/'future.so')
 for mode in ['core-layout','widget-layout','ambiguous']:run(sys.executable,H/'adaptive/make_failure_fixture.py',old,mode,OUT/(mode+'.so'))
 run(sys.executable,H/'adaptive/make_failure_fixture.py',engine,'engine-layout',OUT/'engine-layout.so')
-inputs=[('7722',old,0,7,''),('9226',new,0,7,'!/lib/arm64-v8a/libapp.so'),('engine',engine,1,2,''),('maml',REFS/'launcher-801027722/librust_maml_sdk.so',2,8,''),('future',OUT/'future.so',0,7,''),('core-layout',OUT/'core-layout.so',0,5,''),('widget-layout',OUT/'widget-layout.so',0,3,''),('ambiguous',OUT/'ambiguous.so',0,5,''),('engine-layout',OUT/'engine-layout.so',1,0,'')]
+inputs=[('7722',old,0,23,''),('9226',new,0,23,'!/lib/arm64-v8a/libapp.so'),('engine',engine,1,2,''),('maml',REFS/'launcher-801027722/librust_maml_sdk.so',2,8,''),('future',OUT/'future.so',0,23,''),('core-layout',OUT/'core-layout.so',0,21,''),('widget-layout',OUT/'widget-layout.so',0,3,''),('ambiguous',OUT/'ambiguous.so',0,21,''),('engine-layout',OUT/'engine-layout.so',1,0,'')]
 for name,file,index,ready,suffix in inputs:
     plan=OUT/(name+'.json');run(binary,index,str(file)+suffix,plan,env=dict(os.environ,HG_EXPECT_READY=str(ready)))
     parsed=json.loads(plan.read_text());assert parsed['ready']==ready
     if name in ['core-layout','widget-layout','ambiguous']:
-        disabled=4 if name=='widget-layout'else 2
+        disabled=20 if name=='widget-layout'else 2
         assert all(not(group&disabled)for _,_,group in parsed['patches']),name
     if name=='engine-layout':assert parsed['patches']==[]
 run(sys.executable,H/'adaptive/test_runtime_plans.py',OUT/'7722.json',old,OUT/'9226.json',REFS/'launcher-801029226/libapp.so',OUT/'future.json',OUT/'future.so')

@@ -24,8 +24,8 @@ run(*ADB,'shell','mkdir','-p',REMOTE)
 try:
  for binary in bins:run(*ADB,'push',binary,REMOTE+'/'+binary.name)
  run(*ADB,'shell',REMOTE+'/test_runtime');run(*ADB,'shell',REMOTE+'/test_runtime_tick');run(*ADB,'shell',REMOTE+'/test_page_guard');run(*ADB,'shell',REMOTE+'/test_material')
- inputs=[('7722',old,0,7,''),('9226',new,0,7,'!/lib/arm64-v8a/libapp.so'),('engine',REFS/'launcher-801027722/libhyper_os_flutter.so',1,2,''),('maml',REFS/'launcher-801027722/librust_maml_sdk.so',2,8,'')]
- inputs.extend((name,file,0,5 if name in ['core-layout','ambiguous']else 3 if name=='widget-layout'else 7,'')for name,file in fixtures.items())
+ inputs=[('7722',old,0,23,''),('9226',new,0,23,'!/lib/arm64-v8a/libapp.so'),('engine',REFS/'launcher-801027722/libhyper_os_flutter.so',1,2,''),('maml',REFS/'launcher-801027722/librust_maml_sdk.so',2,8,'')]
+ inputs.extend((name,file,0,21 if name in ['core-layout','ambiguous']else 3 if name=='widget-layout'else 23,'')for name,file in fixtures.items())
  inputs.append(('engine-layout',OUT/'engine-layout.so',1,0,''))
  for name,file,index,ready,suffix in inputs:
   target=REMOTE+'/'+name+file.suffix;plan=REMOTE+'/'+name+'.json'
@@ -33,7 +33,7 @@ try:
   run(*ADB,'pull',plan,OUT/(name+'.json'))
   if name in ['core-layout','widget-layout','ambiguous']:
    import json
-   data=json.loads((OUT/(name+'.json')).read_text());disabled=4 if name=='widget-layout'else 2
+   data=json.loads((OUT/(name+'.json')).read_text());disabled=20 if name=='widget-layout'else 2
    assert all(not(group&disabled)for _,_,group in data['patches']),name
   if name=='engine-layout':
    import json

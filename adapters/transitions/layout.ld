@@ -39,6 +39,14 @@ maml_filter_continue = 0x163e20c;
 android_image_continue = 0x10d4bc4;
 android_background_continue = 0x173d858;
 android_paint_begin = 0x10b85d0;
+center_crop_alpha_return = 0x10c69f0;
+fit_scaled_alpha_return = 0x10c5778;
+bitmap_size_alpha_return = 0x10cfff0;
+drawable_alpha_return = 0x10d367c;
+future_drawable_return = 0x10cdac0;
+image_opacity_value = 0x10c58dc;
+image_opacity_none = 0x10c58cc;
+image_opacity_wrap = 0x10c5940;
 android_paint_end = 0x10b9534;
 
 

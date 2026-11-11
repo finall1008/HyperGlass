@@ -1,4 +1,4 @@
-# HyperGlass 1.0.4
+# HyperGlass 1.0.5
 
 HyperOS 系统桌面的 LSPosed 模块，提供单色玻璃图标、文件夹、动态日历和时钟，以及 MAML / Android 小组件样式。包名为 `dev.hyperglass.lsposed`，作用域为 `com.miui.home`。
 
@@ -6,9 +6,9 @@ HyperOS 系统桌面的 LSPosed 模块，提供单色玻璃图标、文件夹、
 
 ## 安装
 
-1. 从本仓库 Release 下载 `HyperGlass-LSPosed-1.0.4.apk` 并覆盖安装。
+1. 从本仓库 Release 下载 `HyperGlass-LSPosed-1.0.5.apk` 并覆盖安装。
 2. 在支持 HyperOS Runtime 注入的 LSPosed / Vector 中启用模块，作用域选择系统桌面。
-3. 打开模块设置页，按需隐藏桌面图标；隐藏后从 LSPosed / Vector 的模块页面重新打开设置页。
+3. 打开模块设置页，按需隐藏桌面图标或关闭小组件单色；隐藏后从 LSPosed / Vector 的模块页面重新打开设置页，单色开关修改后重新加载桌面生效。
 4. 重新加载系统桌面。停用、卸载后重新加载桌面可恢复系统渲染。
 
 框架需要 Modern API 102 与 native API 2。已验证 LSPosed 2.2.1 (7912) + Zygisk Next 加载链。使用旧 HyperGlass root helper 的设备先停用旧 helper。
@@ -17,7 +17,7 @@ HyperOS 系统桌面的 LSPosed 模块，提供单色玻璃图标、文件夹、
 
 运行时从当前 ELF、Dart 方法符号、ARM64 语义和调用关系定位，类编号、字段和栈槽随当前二进制推导。支持 APK 内直接映射的库，以及原生 Hook 分割后的连续可执行映射。各功能组校验失败时停用对应组并记录原因。
 
-参考地址用于生成定位规则。版本号、Build ID 和文件哈希不参与运行时启用判断。已覆盖 Launcher 801027722、801029226 和地址、字段、类编号变化样本；9226 已在真机与模拟器验证。
+参考地址用于生成定位规则。版本号、Build ID 和文件哈希不参与运行时启用判断。已覆盖 Launcher 801027722、801029226 和地址、字段、类编号变化样本；9226 已在真机与模拟器验证，9239 已在模拟器验证。
 
 ## 源码
 

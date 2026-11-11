@@ -255,6 +255,8 @@ bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolv
    memcpy(payloads[i].data(),config.data(),program.config_count*4);
   }
  }
+ // Monochrome widget artwork branches into the widget adapters.
+ if(!(ready&4))ready&=~16u;
  if((ready&2)&&!strcmp(program.image,"libapp.so")){
   for(const char*name:{"SfAnimIconCapture._buildLayersFromIconInfo","SfWindowAnimImplementor.prepareIconLayers"})if(!prefer_live_boundary(image,live,name,out.patches,out.diagnostic)){
    ready&=~2u;out.diagnostic+="live icon boundary cache guard unresolved; ";break;
