@@ -8,6 +8,8 @@ image=Image(sys.argv[1]);raw=bytearray(Path(sys.argv[1]).read_bytes());mode=sys.
 def offset(va):return next(s['p_offset']+va-s['p_vaddr']for s in image.elf.iter_segments()if s['p_type']=='PT_LOAD'and s['p_vaddr']<=va<s['p_vaddr']+s['p_filesz'])
 if mode=='core-layout':
  at=offset(0xa03338);w=struct.unpack_from('<I',raw,at)[0];struct.pack_into('<I',raw,at,(w&~(511<<12))|(0x4b<<12))
+elif mode=='badge-layout':
+ at=offset(0x1749cfc);w=struct.unpack_from('<I',raw,at)[0];struct.pack_into('<I',raw,at,(w&~(511<<12))|(0x2f<<12))
 elif mode=='widget-layout':
  pc=0xc1e528;target=branch_target(struct.unpack('<I',image.read(pc,4))[0],pc);at=offset(target);w=struct.unpack_from('<I',raw,at)[0];struct.pack_into('<I',raw,at,w^(0x10<<5))
 elif mode=='engine-layout':

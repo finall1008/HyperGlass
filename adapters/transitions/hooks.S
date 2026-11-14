@@ -354,3 +354,24 @@ capture_transform:
 transform_replay:
  stp x29,x30,[x15,#-16]!
  b transform_continue
+
+.section .badge,"ax"
+.global badge_text,badge_background,badge_white_pool,badge_text_replay
+// Color.withAlpha returned a fresh text Color at its original safepoint.
+// Keep alpha; never mutate a shared pool Color or allocate from the adapter.
+badge_text:
+ stur xzr,[x0,#0xf]
+ stur xzr,[x0,#0x17]
+ stur xzr,[x0,#0x1f]
+badge_text_replay:
+ stur x0,[x29,#-0x30]
+ b badge_text_continue
+badge_background:
+ mov x16,x1
+badge_white_pool:
+ // Replay the current binary's white Color load from the text constructor.
+ add x1,x27,#0xb,lsl #12
+ ldr x1,[x1,#0xb48]
+ mov x0,x1
+ mov x1,x16
+ b badge_background_continue

@@ -16,7 +16,7 @@ bins=[compile_test('test_runtime',False,[B/'assets.o']),compile_test('test_runti
 old=REFS/'launcher-801027722/libapp.so';new=REFS/'launcher-801029226/MiuiHome.apk'
 fixtures={}
 run(sys.executable,H/'adaptive/make_future_fixture.py',old,OUT/'future.so');fixtures['future']=OUT/'future.so'
-for mode in ['core-layout','widget-layout','ambiguous']:
+for mode in ['core-layout','widget-layout','ambiguous','badge-layout']:
  run(sys.executable,H/'adaptive/make_failure_fixture.py',old,mode,OUT/(mode+'.so'));fixtures[mode]=OUT/(mode+'.so')
 engine=REFS/'launcher-801027722/libhyper_os_flutter.so'
 run(sys.executable,H/'adaptive/make_failure_fixture.py',engine,'engine-layout',OUT/'engine-layout.so')
@@ -24,16 +24,16 @@ run(*ADB,'shell','mkdir','-p',REMOTE)
 try:
  for binary in bins:run(*ADB,'push',binary,REMOTE+'/'+binary.name)
  run(*ADB,'shell',REMOTE+'/test_runtime');run(*ADB,'shell',REMOTE+'/test_runtime_tick');run(*ADB,'shell',REMOTE+'/test_page_guard');run(*ADB,'shell',REMOTE+'/test_material')
- inputs=[('7722',old,0,23,''),('9226',new,0,23,'!/lib/arm64-v8a/libapp.so'),('engine',REFS/'launcher-801027722/libhyper_os_flutter.so',1,2,''),('maml',REFS/'launcher-801027722/librust_maml_sdk.so',2,8,'')]
- inputs.extend((name,file,0,21 if name in ['core-layout','ambiguous']else 3 if name=='widget-layout'else 23,'')for name,file in fixtures.items())
+ inputs=[('7722',old,0,55,''),('9226',new,0,55,'!/lib/arm64-v8a/libapp.so'),('engine',REFS/'launcher-801027722/libhyper_os_flutter.so',1,2,''),('maml',REFS/'launcher-801027722/librust_maml_sdk.so',2,8,'')]
+ inputs.extend((name,file,0,53 if name in ['core-layout','ambiguous']else 35 if name=='widget-layout'else 23 if name=='badge-layout'else 55,'')for name,file in fixtures.items())
  inputs.append(('engine-layout',OUT/'engine-layout.so',1,0,''))
  for name,file,index,ready,suffix in inputs:
   target=REMOTE+'/'+name+file.suffix;plan=REMOTE+'/'+name+'.json'
   run(*ADB,'push',file,target);run(*ADB,'shell',f'HG_EXPECT_READY={ready}',REMOTE+'/test_resolver',index,target+suffix,plan)
   run(*ADB,'pull',plan,OUT/(name+'.json'))
-  if name in ['core-layout','widget-layout','ambiguous']:
+  if name in ['core-layout','widget-layout','ambiguous','badge-layout']:
    import json
-   data=json.loads((OUT/(name+'.json')).read_text());disabled=20 if name=='widget-layout'else 2
+   data=json.loads((OUT/(name+'.json')).read_text());disabled=32 if name=='badge-layout'else 20 if name=='widget-layout'else 2
    assert all(not(group&disabled)for _,_,group in data['patches']),name
   if name=='engine-layout':
    import json

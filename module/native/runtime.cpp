@@ -39,6 +39,15 @@ bool widget_monochrome(){
  }
  return value;
 }
+bool badge_monochrome(){
+ static int value=-1;
+ if(value<0){
+  value=0;FILE*f=fopen("/storage/emulated/0/Android/media/dev.hyperglass.lsposed/badge-monochrome","re");
+  if(f){value=fgetc(f)=='1';fclose(f);}
+  LOG("Notification badge monochrome %s",value?"on":"off");
+ }
+ return value;
+}
 struct ImageState { uintptr_t base=0;std::string path;hg::Resolved result;bool attempted=false; };
 std::array<ImageState,3> images;
 std::mutex mutex;
@@ -105,6 +114,7 @@ extern "C" unsigned hg_runtime_tick(const char*phase){
   const auto&r=images[i].result;unsigned enabled=r.ready;
   if(!snapshots)enabled&=~2u;
   if(i==0&&(enabled&16)&&!widget_monochrome())enabled&=~16u;
+  if(i==0&&(enabled&32)&&!badge_monochrome())enabled&=~32u;
   ready|=enabled;
   for(const auto&p:r.patches)if(p.group&enabled)batch.push_back(p);
  }

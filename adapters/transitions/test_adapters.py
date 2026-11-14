@@ -18,6 +18,7 @@ def setup():
    if page not in mapped:u.mem_map(page,4096);mapped.add(page)
   u.mem_write(va,data)
  for p in patches:put(int(p['vaddr'],16),bytes.fromhex(p['replacement']))
+ badge=linked.get_section_by_name('.badge');put(badge['sh_addr'],badge.data())
  for i,r in enumerate(regs):u.reg_write(r,0x90000+i*16)
  u.reg_write(regs[28],1);u.reg_write(regs[22],nil);u.reg_write(regs[15],0x2f0000);u.reg_write(regs[29],0x2fa000);u.reg_write(regs[27],0x300000);u.reg_write(R.UC_ARM64_REG_SP,0x2ee000)
  u.mem_write(0x300070,struct.pack('<Q',0x12345))

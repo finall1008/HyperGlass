@@ -71,6 +71,7 @@ class Catalog:
    va=int(r['vaddr'],16);data=bytes.fromhex(r['replacement'])
    if va in skip or self.unit_at(va):continue
    group=1 if i<style_count else 2
+   if va in [0x148af68,0x148b0a4]:group=32
    if va in [0x10e5e00,0xc42d84,0xc42e2c,0xc43c28,0xc43cb4,0x10e3798,0x1642578,0x10c58c8,0x173d854,0x10d4bc0,0xfc6748,0xfc7638,0xfc84a8,0x148083c,0x1480844,0x1480914,0x1480a00,0x1480b78]:group=4
    # Optional monochrome widget artwork; requires the widget adapters (group 4).
    if va in [0x163e208,0x163e2a8,0xf18508,0x10c57cc,0x10c6a60,0x10c7180,0x10e271c,0x12908f0,0x185ce78,0x185d4a0]:group=16
@@ -135,6 +136,11 @@ class Catalog:
     if struct.unpack_from('<I',unit.data,q-unit.source)[0]==old:positions.append(q)
    if len(positions)!=1:raise ValueError(('missing replay',symbol,positions,hex(old)))
    q=positions[0];unit.relocations.append(Reloc(q-unit.source,8,Target(reference,self.model.add(reference,frames=False if symbol.startswith('source_tag_') else None),0),old))
+  for symbol,reference in [('badge_text_replay',0x148af68),('badge_white_pool',0x148af5c)]:
+   pc=syms[symbol];unit=self.unit_at(pc);assert unit
+   for offset in range(0,8 if symbol=='badge_white_pool'else 4,4):
+    old=struct.unpack('<I',self.model.image.read(reference+offset,4))[0]
+    unit.relocations.append(Reloc(pc+offset-unit.source,8,Target(reference+offset,self.model.add(reference+offset),0),old))
  def add_config(self):
   self.config_source=0xb33600
   specs=[(0,0xfb6228),(1,0xfc55cc),(2,0xa07d04),(3,0x1038114),(4,0x1037d80),(5,0x14ebf74),(7,0xc1e528),(8,0xc19da0),(15,0xfaa65c),(17,0x18d99a4),(18,0x18d994c),(30,0xc2e648)]
@@ -171,6 +177,11 @@ def catalogs():
  a.add_elf(EX/'transitions/boundary.elf',['.message','.selector','.initialize'],2,physical=(0x1722030,))
  a.add_elf(EX/'transitions/capture.elf',['.capture_root','.hooks','.capture_small','.limit_test'],2)
  a.add_elf(EX/'transitions/capture.elf',['.text_color','.widget_helpers'],4)
+ a.add_elf(EX/'transitions/capture.elf',['.badge'],32)
+ # The allocation-free black text adapter writes only a fresh Color's RGB.
+ for pc in [0x1749cdc,0x1749cfc,0x1749d18,0x1749d34]:
+  value=immediate(struct.unpack('<I',a.model.image.read(pc,4))[0])
+  a.constraints.append((32,a.model.add(pc),-1,value))
  a.add_elf(EX/'transitions/capture.elf',['.capture_config','.capture_meta','.bridge'],6)
  rows=json.loads((EX/'transitions/profile.json').read_text())['patches'];a.add_rows(rows,len(json.loads((EX/'icons/profile.json').read_text())['patches']))
  a.add_config()

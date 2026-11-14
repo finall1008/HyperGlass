@@ -23,5 +23,5 @@ int main(int argc,char**argv){
   }
   fprintf(f,"]}\n");fclose(f);
  }
- uint32_t expected=getenv("HG_EXPECT_READY")?uint32_t(strtoul(getenv("HG_EXPECT_READY"),nullptr,10)):(index==0?23:index==1?2:8);return (ok||expected==0)&&result.ready==expected?0:1;
+ uint32_t expected=getenv("HG_EXPECT_READY")?uint32_t(strtoul(getenv("HG_EXPECT_READY"),nullptr,10)):(index==0?55:index==1?2:8);return (ok||expected==0)&&result.ready==expected?0:1;
 }

@@ -8,6 +8,7 @@ SECTIONS {
  .capture_small 0x11f3180 : { *(.capture_small) }
  .limit_test 0x18113a0 : { *(.limit_test) }
  .bridge 0x19bfdb0 : { *(.bridge) }
+ .badge 0x2000000 : { *(.badge) }
  /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) }
 }
 async_scene_return = 0x191a61c;
@@ -58,3 +59,6 @@ scope_maml_icon = 0x19c08e4;
 scope_window_maml = 0x1b15874;
 source_tag_return = 0x1b14738;
 source_tag_tail = 0x11f8168;
+
+badge_text_continue = 0x148af6c;
+badge_background_continue = 0x148b0a8;

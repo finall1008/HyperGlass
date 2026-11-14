@@ -32,16 +32,20 @@ patch(0x14ebf7c,branch(0x14ebf7c,0x1811360),'Set the icon capture key through th
 for va in [0x19bf004,0x1b147a4]:patch(va,bytes.fromhex('1f2003d5'),'Use the complete icon boundary for native SF animations')
 linked=ELFFile(open(H/'capture.elf','rb'))
 limits={'.capture_root':0xb33300-0xb32838,'.widget_helpers':0xb33600-0xb33300,'.capture_meta':0xce29cc-0xce2770,'.hooks':0x11f3180-0x11f30a0,'.capture_small':0x11f3358-0x11f3180,'.limit_test':0x1811460-0x18113a0,'.bridge':0x19bfef0-0x19bfdb0,'.text_color':0x98bea4-0x98bdc0}
+limits['.badge']=64
 if flags:limits['.capture_config']=124
 for sec in linked.iter_sections():
  if sec['sh_type']in ['SHT_REL','SHT_RELA']:assert sec['sh_size']==0
  if sec['sh_flags']&2 and sec['sh_size']:assert sec.name in limits,sec.name
 for name,limit in limits.items():
  sec=linked.get_section_by_name(name);code=sec.data();assert len(code)<=limit,(name,len(code),limit)
- for off in range(0,len(code),256):patch(sec['sh_addr']+off,code[off:off+256],'Allocation-free full-view capture and per-image crop metadata')
+ # The badge section is a private adapter mapping, never an original ELF site.
+ if name!='.badge':
+  for off in range(0,len(code),256):patch(sec['sh_addr']+off,code[off:off+256],'Allocation-free full-view capture and per-image crop metadata')
  print(name,len(code),'bytes')
 for va in [0xb32828,0xce275c,0x11f308c]:patch(va,bytes.fromhex('e00316aac0035fd6'),'Omit diagnostic string formatting to reserve relocation-free adapters')
 symbols={s.name:s['st_value']for s in linked.get_section_by_name('.symtab').iter_symbols()}
+for va,name in [(0x148af68,'badge_text'),(0x148b0a4,'badge_background')]:patch(va,branch(va,symbols[name]),'Optional white notification badges with black text')
 sites=[(0x1562730,'capture_transform'),(0xa02914,'root_gateway'),(0xa02928,'refresh_path'),(0x1562380,'force_path'),(0x1562434,'stop_after_path'),(0x1562124,'capture_image_filter'),(0x1563768,'capture_color_filter'),(0x1563970,'capture_shader_mask'),(0x15629c4,'capture_opacity'),(0x191a74c,'mark_floor'),(0x191a8b8,'mark_ceil'),(0x19c0040,'result_gateway'),(0x1b15198,'bytes_gateway'),(0xa1e608,'clone_pack'),(0xa1e634,'clone_unpack')]
 for va,name in sites:patch(va,branch(va,symbols[name]),'Keep wallpaper sampling in the full viewport; crop pixels before native SF drawing')
 patch(0x1b14734,branch(0x1b14734,symbols['source_controller_tag']),'Resolve recommendation icon controllers using the exact flight source identity')

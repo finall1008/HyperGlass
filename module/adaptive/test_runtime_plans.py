@@ -39,6 +39,26 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
   u.reg_write(R.UC_ARM64_REG_SP,0x2ee000);q(u,0x300070,0x12345)
   return u
  target=Image(Path(imagepath))
+ # Execute the optional badge pair with current pool/frame relocations. Only
+ # the fresh text Color changes; shared white and unrelated objects stay intact.
+ for alpha in [0.0,0.35,1.0]:
+  u=setup();text,white,decoration=[heap+x for x in [0x35001,0x35101,0x35201]]
+  ds(u,text+7,[alpha,1,1,1]);ds(u,white+7,[1,1,1,1])
+  before=bytes(u.mem_read(white-1,48));u.reg_write(regs[0],text)
+  saved=[u.reg_read(r)for r in regs];nzcv=u.reg_read(R.UC_ARM64_REG_NZCV)
+  u.emu_start(address(0x148af68),address(0x148af6c),count=100)
+  assert struct.unpack('<4d',u.mem_read(text+7,32))==(alpha,0,0,0)
+  replay=struct.unpack('<I',u.mem_read(address(symbols['badge_text_replay']),4))[0]
+  assert qi(u,saved[29]+immediate(replay))==text
+  assert all(u.reg_read(r)==saved[i]for i,r in enumerate(regs))
+  add,load=struct.unpack('<2I',u.mem_read(address(symbols['badge_white_pool']),8))
+  q(u,0x300000+immediate(add)+immediate(load),white)
+  u.reg_write(regs[1],decoration);saved=[u.reg_read(r)for r in regs]
+  u.emu_start(address(0x148b0a4),address(0x148b0a8),count=100)
+  assert u.reg_read(regs[0])==white
+  assert all(u.reg_read(r)==saved[i]for i,r in enumerate(regs)if i not in [0,16])
+  assert bytes(u.mem_read(white-1,48))==before and u.reg_read(R.UC_ARM64_REG_NZCV)==nzcv
+ print('PASS optional badge black text alpha, white background, shared constants and current pool/frame relocations:',Path(planpath).name,flush=True)
  # The flight source distinguishes duplicate icons in different containers.
  # Reuse the original component/user interpolation and its GC return PCs.
  tail=address(0x11f8168);start,size,_=target.names['AppInfoModel.getcomponentNameString'][0]

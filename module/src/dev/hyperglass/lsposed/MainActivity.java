@@ -7,6 +7,7 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.ScrollView;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -14,8 +15,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 public final class MainActivity extends Activity {
  private ComponentName launcherAlias;
- private Button toggle,monochrome;
- private File monochromeSetting;
+ private Button toggle,monochrome,badges;
+ private File monochromeSetting,badgeSetting;
  @Override public void onCreate(Bundle state) {
   super.onCreate(state);
   launcherAlias=new ComponentName(this,getPackageName()+".Launcher");
@@ -25,7 +26,7 @@ public final class MainActivity extends Activity {
   layout.setPadding(pad,pad,pad,pad);
   TextView text=new TextView(this);
   text.setTextSize(18);
-  text.setText("HyperGlass 1.0.5\n\n在 LSPosed / Vector 中启用本模块，作用域选择系统桌面（com.miui.home），然后重启系统桌面。\n\n包含单色玻璃图标、动态日历和时钟、文件夹、MAML 及普通 Android 小组件。\n\n需要支持 HyOS 原生进程的框架和 Modern API 102。自动读取当前桌面及渲染库，通过方法符号、ARM64 语义与调用关系定位。类编号、关键字段和栈槽随当前二进制推导。遇到缺失或多义匹配时停用相应功能并记录原因。\n\n模块启停后需重启桌面；卸载模块后重启桌面即可恢复。运行诊断见日志标签 HyperGlass。");
+  text.setText("HyperGlass 1.0.6\n\n在 LSPosed / Vector 中启用本模块，作用域选择系统桌面（com.miui.home），然后重启系统桌面。\n\n包含单色玻璃图标、动态日历和时钟、文件夹、MAML 及普通 Android 小组件。\n\n需要支持 HyOS 原生进程的框架和 Modern API 102。自动读取当前桌面及渲染库，通过方法符号、ARM64 语义与调用关系定位。类编号、关键字段和栈槽随当前二进制推导。遇到缺失或多义匹配时停用相应功能并记录原因。\n\n模块启停后需重启桌面；卸载模块后重启桌面即可恢复。运行诊断见日志标签 HyperGlass。");
   layout.addView(text);
   toggle=new Button(this);
   toggle.setOnClickListener(view->setLauncherHidden(!isLauncherHidden()));
@@ -42,9 +43,39 @@ public final class MainActivity extends Activity {
   monochromeHint.setTextSize(14);
   monochromeHint.setText("开启时小组件内的图标、图片和照片以单色显示；关闭后保留原色，文字仍为白色。修改后重启系统桌面生效。");
   layout.addView(monochromeHint);
-  setContentView(layout);
+  badgeSetting=new File(getExternalMediaDirs()[0],"badge-monochrome");
+  badges=new Button(this);
+  badges.setOnClickListener(view->setBadgeMonochrome(!isBadgeMonochrome()));
+  layout.addView(badges,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,ViewGroup.LayoutParams.WRAP_CONTENT));
+  TextView badgeHint=new TextView(this);
+  badgeHint.setTextSize(14);
+  badgeHint.setText("开启后通知角标显示为白底黑字；关闭后使用系统配色。修改后重启系统桌面生效。");
+  layout.addView(badgeHint);
+  ScrollView scroll=new ScrollView(this);
+  scroll.addView(layout);
+  setContentView(scroll);
   updateToggle();
   updateMonochrome();
+  updateBadges();
+ }
+ private boolean isBadgeMonochrome() {
+  try {
+   return "1".equals(new String(Files.readAllBytes(badgeSetting.toPath()),StandardCharsets.US_ASCII).trim());
+  } catch (IOException e) {
+   return false;
+  }
+ }
+ private void setBadgeMonochrome(boolean enabled) {
+  try (FileOutputStream out=new FileOutputStream(badgeSetting)) {
+   out.write(enabled?'1':'0');
+  } catch (IOException e) {
+   badges.setText("无法写入设置："+e.getMessage());
+   return;
+  }
+  updateBadges();
+ }
+ private void updateBadges() {
+  badges.setText(isBadgeMonochrome()?"通知角标白底黑字：已开启":"通知角标白底黑字：已关闭");
  }
  private boolean isMonochrome() {
   try {
