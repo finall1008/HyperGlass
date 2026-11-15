@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -39,12 +40,25 @@ bool widget_monochrome(){
  }
  return value;
 }
-bool badge_monochrome(){
- static int value=-1;
+// -1 keeps initialization pending until the setting can be read reliably.
+int badge_monochrome(){
+ static int value=-1,last_error=0;
  if(value<0){
-  value=0;FILE*f=fopen("/storage/emulated/0/Android/media/dev.hyperglass.lsposed/badge-monochrome","re");
-  if(f){value=fgetc(f)=='1';fclose(f);}
-  LOG("Notification badge monochrome %s",value?"on":"off");
+  int error=0;
+  FILE*f=fopen("/storage/emulated/0/Android/media/dev.hyperglass.lsposed/badge-monochrome","re");
+  if(f){
+   int setting=fgetc(f);error=ferror(f)?EIO:EAGAIN;fclose(f);
+   if(setting=='0'||setting=='1')value=setting-'0';
+  }else{
+   error=errno;
+   // A missing setting means the default only after shared storage is visible.
+   if(error==ENOENT&&access("/storage/emulated/0/Android",F_OK)==0)value=0;
+  }
+  if(value>=0)LOG("Notification badge monochrome %s",value?"on":"off");
+  else if(error!=last_error){
+   LOG("Notification badge setting pending errno=%d; will retry",error);
+   last_error=error;
+  }
  }
  return value;
 }
@@ -109,12 +123,16 @@ extern "C" unsigned hg_runtime_tick(const char*phase){
   uintptr_t target=hg::adapter_address(images[0].result,0xce2770);
   snapshots=target&&hg_install_native_hook((void*)target,(void*)export_dispatch,(void**)&original_dispatch)==0&&original_dispatch;
  }
- std::vector<hg_patch>batch;unsigned ready=0;
+ std::vector<hg_patch>batch;unsigned ready=0;bool settings_pending=false;
  for(size_t i=0;i<images.size();i++){
   const auto&r=images[i].result;unsigned enabled=r.ready;
   if(!snapshots)enabled&=~2u;
   if(i==0&&(enabled&16)&&!widget_monochrome())enabled&=~16u;
-  if(i==0&&(enabled&32)&&!badge_monochrome())enabled&=~32u;
+  if(i==0&&(enabled&32)){
+   int monochrome=badge_monochrome();
+   if(monochrome!=1)enabled&=~32u;
+   settings_pending=monochrome<0;
+  }
   ready|=enabled;
   for(const auto&p:r.patches)if(p.group&enabled)batch.push_back(p);
  }
@@ -126,7 +144,7 @@ extern "C" unsigned hg_runtime_tick(const char*phase){
  if(rc>=0 && (ready&8))hg_install_resources();
  bool all_attempted=std::all_of(images.begin(),images.end(),[](const ImageState&s){return s.attempted;});
  bool snapshots_pending=(images[0].result.ready&2)&&(images[1].result.ready&2)&&!snapshots;
- if(all_attempted&&!snapshots_pending&&(rc>=0||rc==-4))runtime_complete.store(true,std::memory_order_release);
+ if(all_attempted&&!snapshots_pending&&!settings_pending&&(rc>=0||rc==-4))runtime_complete.store(true,std::memory_order_release);
  return rc>=0?ready:0;
 }
 extern "C" bool hg_runtime_complete(){
