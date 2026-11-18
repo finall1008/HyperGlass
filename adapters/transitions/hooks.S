@@ -169,6 +169,54 @@ maml_filter_color:
  stur d0,[x0,#0x1f]
  mov x3,x0
  b maml_filter_continue
+#ifdef HG_ADAPTIVE
+.section .widget_spans,"ax"
+.global span_direct
+span_direct:
+ orr w0,w0,#0xffffff
+ stur x0,[x29,#-0x38]
+ b span_direct_continue
+.section .widget_wrap,"ax"
+.global wrap_compound_widget,wrap_filter_dispatch,wrap_filter_resume
+wrap_compound_widget:
+ mov x0,x2
+ // Enter the launcher's ColorFiltered factory with its original Dart frame
+ // and child root. Both calls execute with their original return PCs.
+ stp x29,x30,[x15,#-16]!
+ mov x29,x15
+ sub x15,x15,#0x18
+ stur x0,[x29,#-8]
+ stur x22,[x29,#-0x10]
+ stur x22,[x29,#-0x18]
+ mov x1,x22
+ b wrap_factory_filter_call
+wrap_filter_dispatch:
+ cmp w1,w22
+ b.eq wrap_filter_matrix
+ b wrap_factory_set_state
+wrap_filter_matrix:
+ b wrap_grayscale_matrix
+wrap_filter_resume:
+ ldur x16,[x29,#-0x10]
+ cmp w16,w22
+ b.eq wrap_keep_filter
+ mov x0,x16
+ b wrap_factory_resume
+wrap_keep_filter:
+ stur x0,[x29,#-0x18]
+ b wrap_factory_child
+.section .widget_image_filter,"ax"
+.global widget_image_filter
+widget_image_filter:
+ // _buildContent marks background-only widgets. Their Drawable already owns
+ // the matrix. Keep the provider's normal outer filter getter on this path.
+ ldur x16,[x29,#-0x10]
+ ldur w16,[x16,#0x3b]
+ tbz w16,#4,widget_image_filter_original
+ b wrap_grayscale_matrix
+widget_image_filter_original:
+ br x17
+#endif
 .section .widget_helpers,"ax"
 .global android_image_opacity
 android_image_opacity:

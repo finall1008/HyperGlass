@@ -31,11 +31,67 @@ void Locator::scan(const Anchor&a,uint64_t begin,uint64_t end,std::vector<uint32
   if(!score)exact.push_back(uint32_t(pc));else if(score<=2)elastic.push_back(uint32_t(pc));
  }
 }
+void Locator::append_helpers(const char*name,std::vector<Symbol>&functions) const{
+ std::set<uint64_t>seen;for(const auto&s:functions)seen.insert(s.value);
+ std::string owner=name;size_t dot=owner.find_last_of('.');std::string prefix=dot==std::string::npos?owner+".":owner.substr(0,dot+1);
+ for(unsigned depth=0;depth<2;depth++){
+  auto previous=functions;size_t added=0;
+  for(const auto&entry:previous)for(uint64_t pc=entry.value,end=image_.symbol_end(entry);pc+4<=end;pc+=4){
+   uint32_t w=image_.word(pc);if((w&0xfc000000)!=0x94000000)continue;uint64_t target=branch_target(w,pc);
+   if(seen.count(target))continue;
+   const auto&all=image_.symbols();auto candidate=std::lower_bound(all.begin(),all.end(),target,[](const Symbol&s,uint64_t address){return s.value<address;});
+   for(;candidate!=all.end()&&candidate->value==target;++candidate)if(candidate->name.compare(0,prefix.size(),prefix)==0){functions.push_back(*candidate);seen.insert(target);added++;break;}
+  }
+  if(!added||functions.size()>32)break;
+ }
+}
+bool Locator::matches_sequence(const Anchor&a,uint64_t start) const{
+ if(!image_.at(start,size_t(a.count)*4)||!image_.executable(start,size_t(a.count)*4))return false;
+ for(unsigned i=0;i<a.count;i++)if((image_.word(start+i*4)&a.masks[i])!=(a.values[i]&a.masks[i]))return false;
+ for(unsigned i=0;i<a.relation_count;i++){
+  const auto&r=a.relations[i];
+  if(((image_.word(start+r.left*4)>>r.left_shift)&31)!=((image_.word(start+r.right*4)>>r.right_shift)&31))return false;
+ }
+ return true;
+}
 uint32_t Locator::resolve(size_t index){
  if(index>=program_.anchor_count)return 0;
  if(resolved_[index]>=0)return uint32_t(resolved_[index]);
  resolved_[index]=0;const auto&a=program_.anchors[index];std::vector<uint32_t>exact,elastic;
- if(a.mode==5){
+ if(a.mode==Anchor::NamedCall||a.mode==Anchor::OperandSequence){
+  std::set<uint64_t>destinations;
+  for(const auto&symbol:image_.named(a.callee))destinations.insert(symbol.value);
+  if(a.mode==Anchor::NamedCall&&destinations.empty())return 0;
+  auto functions=image_.named(a.owner);size_t owner_count=functions.size();
+  if(a.follow_helpers)append_helpers(a.owner,functions);
+  for(size_t i=0;i<functions.size();i++){
+   if(i==owner_count&&!exact.empty())break;
+   const auto&owner=functions[i];
+   uint64_t end=image_.symbol_end(owner);
+   for(uint64_t pc=owner.value;pc+4<=end;pc+=4){
+    if(a.mode==Anchor::OperandSequence){
+     if(pc+size_t(a.count)*4<=end&&matches_sequence(a,pc))exact.push_back(uint32_t(pc+a.before*4));
+     continue;
+    }
+    uint32_t word=image_.word(pc);
+    if((word&0xfc000000)!=0x94000000)continue;
+    uint64_t callee=branch_target(word,pc);
+    if(!destinations.count(callee))continue;
+    uint64_t result=pc+a.delta;
+    if(result>=owner.value&&result+4<=end&&image_.executable(result,4))exact.push_back(uint32_t(result));
+   }
+  }
+ }else if(a.mode==Anchor::BranchDestination||a.mode==Anchor::RelativeSequence){
+  uint32_t source=resolve(size_t(a.dependency));if(!source)return 0;
+  uint64_t pc=uint64_t(source)+a.delta,dest=a.mode==Anchor::BranchDestination?branch_target(image_.word(pc),pc):pc;
+  if(dest>=uint64_t(a.before)*4){
+   uint64_t start=dest-uint64_t(a.before)*4;
+   for(const auto&owner:image_.named(a.owner)){
+    uint64_t end=image_.symbol_end(owner);
+    if(pc>=owner.value&&pc<end&&start>=owner.value&&start+size_t(a.count)*4<=end&&matches_sequence(a,start))exact.push_back(uint32_t(dest));
+   }
+  }
+ }else if(a.mode==5){
   uint32_t marker=resolve(size_t(a.dependency));if(!marker)return 0;std::set<uint64_t>destinations;
   for(const auto&s:image_.named(a.callee))destinations.insert(s.value);
   auto owners=image_.named(a.owner);
@@ -85,18 +141,7 @@ uint32_t Locator::resolve(size_t index){
   if(owners.empty()||(a.mode==2&&destinations.empty()))for(const auto&segment:image_.segments())if(segment.p_flags&PF_X)check_range(segment.p_vaddr,segment.p_vaddr+segment.p_filesz,true);
  }else{
   uint64_t qualified=0;if(a.qualifier>=0){uint32_t pc=resolve(size_t(a.qualifier));if(!pc)return 0;qualified=branch_target(image_.word(pc),pc);}
-  auto functions=image_.named(a.owner);std::set<uint64_t>seen;for(const auto&s:functions)seen.insert(s.value);
-  std::string owner=a.owner;size_t dot=owner.find_last_of('.');std::string prefix=dot==std::string::npos?owner+".":owner.substr(0,dot+1);
-  for(unsigned depth=0;depth<2;depth++){
-   auto previous=functions;size_t added=0;
-   for(const auto&entry:previous)for(uint64_t pc=entry.value,end=image_.symbol_end(entry);pc+4<=end;pc+=4){
-    uint32_t w=image_.word(pc);if((w&0xfc000000)!=0x94000000)continue;uint64_t target=branch_target(w,pc);
-    if(seen.count(target))continue;
-    const auto&all=image_.symbols();auto candidate=std::lower_bound(all.begin(),all.end(),target,[](const Symbol&s,uint64_t address){return s.value<address;});
-    for(;candidate!=all.end()&&candidate->value==target;++candidate)if(candidate->name.compare(0,prefix.size(),prefix)==0){functions.push_back(*candidate);seen.insert(target);added++;break;}
-   }
-   if(!added||functions.size()>32)break;
-  }
+  auto functions=image_.named(a.owner);append_helpers(a.owner,functions);
   for(const auto&s:functions)if(!qualified||s.value==qualified)scan(a,s.value,image_.symbol_end(s),exact,elastic);
   if(functions.empty())for(const auto&segment:image_.segments())if(segment.p_flags&PF_X)scan(a,segment.p_vaddr,segment.p_vaddr+segment.p_filesz,exact,elastic);
  }
@@ -143,6 +188,157 @@ static bool encode_relative(uint32_t old,uint64_t pc,uint64_t destination,uint8_
  if(kind==6){out=(old&~(4095u<<10))|(uint32_t(destination&4095)<<10);return true;}
  if(kind==7){unsigned scale=((old&(1u<<26))&&(old&(1u<<23)))?4:old>>30;uint32_t low=uint32_t(destination&4095);if(low&((1u<<scale)-1))return false;out=(old&~(4095u<<10))|((low>>scale)<<10);return true;}
  return false;
+}
+static bool add_widget_branch(const ElfImage&image,uintptr_t live,uint64_t pc,uintptr_t target,unsigned group,bool link,std::vector<Patch>&patches){
+ uint32_t word=0;
+ if(!target||!image.executable(pc,4)||!image.at(pc,4)||!encode_relative(link?0x94000000:0x14000000,live+pc,target,1,word))return false;
+ Patch patch{};patch.address=live+pc;patch.size=4;patch.group=uint8_t(group);
+ memcpy(patch.original,image.at(pc,4),4);memcpy(patch.bytes,&word,4);patches.push_back(patch);return true;
+}
+static bool named_widget_call(const ElfImage&image,const Symbol&owner,const char*name,uint32_t preceding=0){
+ auto callees=image.named(name);
+ if(callees.size()!=1)return false;
+ unsigned calls=0;
+ for(uint64_t pc=owner.value;pc+4<=owner.value+owner.size;pc+=4){
+  uint32_t word=image.word(pc);
+  if((word&0xfc000000)==0x94000000&&branch_target(word,pc)==callees.front().value){
+   if(preceding&&(pc<owner.value+8||image.word(pc-8)!=preceding))return false;
+   calls++;
+  }
+ }
+ return calls==1;
+}
+static bool dart_widget_frame(const ElfImage&image,const Symbol&owner){
+ return owner.size>=16&&image.executable(owner.value,owner.size)&&image.word(owner.value)==0xa9bf79fd&&image.word(owner.value+4)==0xaa0f03fd;
+}
+// Replace the renderer's own ColorFilter construction. Wrapping its final
+// widget would apply the matrix twice when an ImageView or TextView already
+// owns the filter, and would also change the cached raster path.
+static bool plan_vector_filters(const ElfImage&image,uintptr_t live,uintptr_t filter,std::vector<Patch>&out){
+ auto matrices=image.named("FlutterDisableImageView.disabledColorFilter");
+ if(matrices.size()!=1||!filter)return false;
+ uint64_t allocate=0;
+ const auto&factory=matrices.front();
+ for(uint64_t pc=factory.value;pc+12<=factory.value+factory.size;pc+=4){
+  uint32_t word=image.word(pc);
+  if((word&0xfc000000)!=0x94000000||(image.word(pc+4)&0xffc003ff)!=0x91400361||
+     (image.word(pc+8)&0xffc003ff)!=0xf9400021)continue;
+  if(allocate)return false;
+  allocate=branch_target(word,pc);
+ }
+ if(!allocate)return false;
+ std::vector<Patch>patches;
+ for(const char*name:{"_VectorDrawableBoxState._buildLiveCached","_VectorDrawableBoxState._renderScene"}){
+  auto owners=image.named(name);
+  if(owners.size()!=1||!dart_widget_frame(image,owners.front())||!named_widget_call(image,owners.front(),"_VectorDrawableBoxState._resolveTintColor"))return false;
+  const auto&owner=owners.front();uint64_t end=owner.value+owner.size;
+  uint64_t select=0,call=0,join=0;
+  for(uint64_t pc=owner.value+4;pc+64<=end;pc+=4){
+   uint32_t nonnull=image.word(pc),skip=image.word(pc+8);
+   if(image.word(pc-4)!=0x6b16001f||nonnull!=0x54000061||image.word(pc+4)!=0xaa1603e3||
+      (skip&0xfc000000)!=0x14000000)continue;
+   uint64_t block=branch_target(nonnull,pc),result=branch_target(skip,pc+8);
+   if(result<=block+32||result>block+80||result>=end||image.word(result-4)!=0xaa0103e3)continue;
+   uint64_t at=result-36;uint32_t word=image.word(at);
+   if(at<block||(word&0xfc000000)!=0x94000000||branch_target(word,at)!=allocate||
+      image.word(at+4)!=0xaa0003e1||image.word(at+12)!=0xb8007020||
+      (image.word(at+20)&0xffffffe0)!=0xb800b020||
+      (image.word(at+24)&0xffffffe0)!=0xd2800020||
+      (image.word(at+28)&0xffffffe0)!=0xf8013020||
+      (image.word(at+24)&31)!=(image.word(at+28)&31))continue;
+   if(call)return false;
+   select=pc;call=at;join=result;
+  }
+  if(!call||!add_widget_branch(image,live,select,live+branch_target(image.word(select),select),HG_WIDGET_VECTOR,false,patches)||
+     !add_widget_branch(image,live,call,filter,HG_WIDGET_VECTOR,true,patches))return false;
+  uint32_t words[]={0xaa0003e3,0}; // mov x3,x0, then the original output join
+  if(!encode_relative(0x14000000,live+call+8,live+join,1,words[1]))return false;
+  Patch patch{};patch.address=live+call+4;patch.size=sizeof(words);patch.group=HG_WIDGET_VECTOR;
+  memcpy(patch.original,image.at(call+4,patch.size),patch.size);
+  memcpy(patch.bytes,words,patch.size);patches.push_back(patch);
+ }
+ out.insert(out.end(),patches.begin(),patches.end());return true;
+}
+static bool plan_compound_wrapping(const ElfImage&image,uintptr_t live,const WidgetWrap&wrap,Resolved&out){
+ std::vector<Patch>patches;
+ const char*name="_FlutterTextViewState._applyDrawableTint";
+ auto owners=image.named(name),callers=image.named("_FlutterTextViewState._buildCompoundDrawableWidget");
+ // Wrap the caller's original Widget in x2 before the provider tint runs.
+ if(!(owners.size()==1&&callers.size()==1&&dart_widget_frame(image,owners.front())&&
+     named_widget_call(image,callers.front(),name,0xaa0003e2)&&
+     named_widget_call(image,owners.front(),"_FlutterTextViewState._tintedCompoundCopy")&&
+     add_widget_branch(image,live,owners.front().value,adapter_address(out,wrap.compound),HG_WIDGET_COMPOUND,false,patches)))return false;
+ uint64_t call=out.addresses[size_t(wrap.call_anchor)];
+ if(!call||!add_widget_branch(image,live,call,adapter_address(out,wrap.dispatch),HG_WIDGET_COMPOUND,true,patches)||
+    !add_widget_branch(image,live,call+4,adapter_address(out,wrap.resume),HG_WIDGET_COMPOUND,false,patches))return false;
+ out.patches.insert(out.patches.end(),patches.begin(),patches.end());
+ return true;
+}
+static bool plan_background_filter(const ElfImage&image,uintptr_t live,uint64_t call,uintptr_t adapter,std::vector<Patch>&out){
+ auto contents=image.named("_ImageViewState._buildContent");
+ auto backgrounds=image.named("_ImageViewState._buildBackgroundOnly");
+ auto trees=image.named("_ImageViewState._buildImageContentTree");
+ if(contents.size()!=1||backgrounds.size()!=1||trees.size()!=1||
+    image.named("RenderViewDecorationMixin._paintDrawableAt").empty()||
+    !image.named("_ImageViewState._buildBackgroundOnlyFuture").empty())return false;
+ const auto&content=contents.front();const auto&tree=trees.front();
+ if(!dart_widget_frame(image,content)||!dart_widget_frame(image,tree)||
+    call<tree.value+0x24||call+8>tree.value+tree.size||
+    image.word(tree.value+0x10)!=0xf81f03a1||image.word(call-4)!=0xf87e7abe||image.word(call)!=0xd63f03c0||
+    image.word(content.value+12)!=0x9100c2c0||image.word(content.value+0x28)!=0xb803b060)return false;
+ unsigned routes=0;
+ for(uint64_t pc=content.value+20;pc+16<=content.value+content.size;pc+=4){
+  uint32_t word=image.word(pc);
+  if((word&0xfc000000)!=0x94000000||branch_target(word,pc)!=backgrounds.front().value)continue;
+  bool first=image.word(pc-20)==0x910082c8&&image.word(pc-16)==0xb803b088&&image.word(pc-12)==0xaa0403e1;
+  bool second=image.word(pc-20)==0x910082c2&&image.word(pc-16)==0xb803b002&&image.word(pc-8)==0xaa0003e1;
+  if((!first&&!second)||image.word(pc+4)!=0xaa1d03ef||image.word(pc+12)!=0xd65f03c0)return false;
+  routes++;
+ }
+ if(routes!=2||!adapter)return false;
+ uint32_t words[]={0xf87e7ab1,0}; // ldr x17,[x21,x30,lsl #3]; bl adapter
+ if(!encode_relative(0x94000000,live+call,adapter,1,words[1]))return false;
+ Patch patch{};patch.address=live+call-4;patch.size=sizeof(words);patch.group=HG_WIDGET_ARTWORK;
+ memcpy(patch.original,image.at(call-4,patch.size),patch.size);
+ memcpy(patch.bytes,words,patch.size);out.push_back(patch);
+ return true;
+}
+static bool plan_widget_layout_density(const ElfImage&image,uintptr_t live,std::vector<Patch>&out){
+ const char*physical_name="DensitySemantics.physicalDensity";
+ auto layout=image.named("DensitySemantics.layoutDensity"),physical=image.named(physical_name);
+ auto dimension=image.named("DensitySemantics.dimensionDensity");
+ if(layout.size()!=1||dimension.size()!=1||physical.size()!=1||!named_widget_call(image,layout.front(),physical_name)||
+    !named_widget_call(image,dimension.front(),physical_name))return false;
+ // The earlier Android layout path divided physical dimensions by the
+ // provider density divided by the host scale. The newer layout helper
+ // accepts provider density directly; its physical fallback keeps the ratio.
+ const uint64_t destination=physical.front().value;
+ if(image.word(destination)!=0x4ea11c3f||image.word(destination+4)!=0x4ea01c01||
+    image.word(destination+8)!=0x4ebf1fe0)return false;
+ bool divides=false;
+ for(uint64_t pc=destination+12;pc+8<=destination+physical.front().size;pc+=4)
+  divides|=image.word(pc)==0x1e611802&&image.word(pc+4)==0x4ea21c40;
+ if(!divides)return false;
+ std::vector<Patch>patches;
+ const std::pair<const char*,uint64_t> callers[]={
+  {"FrbTypedArrayAdapter.getLayoutDimension",layout.front().value},
+  {"FrbTypedArrayAdapter.getLayoutDimensionPixelSize",layout.front().value},
+  {"FrbTypedArrayAdapter._layoutDensity",layout.front().value},
+  {"FrbTypedArrayAdapter.getDimensionPixelSize",dimension.front().value},
+  {"FrbTypedArrayAdapter.getDimensionPixelOffset",dimension.front().value},
+ };
+ for(const auto&caller:callers){
+  auto owners=image.named(caller.first);
+  if(owners.size()!=1)return false;
+  const auto&owner=owners.front();size_t before=patches.size();
+  for(uint64_t pc=owner.value;pc+4<=owner.value+owner.size;pc+=4){
+   uint32_t word=image.word(pc);
+   if((word&0xfc000000)==0x94000000&&branch_target(word,pc)==caller.second&&
+      !add_widget_branch(image,live,pc,live+destination,4,true,patches))return false;
+  }
+  if(patches.size()==before)return false;
+ }
+ out.insert(out.end(),patches.begin(),patches.end());return true;
 }
 // Some launchers added a bitmap cache ahead of the attached boundary. Its
 // image can contain an old calendar/clock frame and lacks the current glass.
@@ -205,9 +401,9 @@ bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolv
  uint32_t ready=0;for(size_t i=0;i<program.group_count;i++)ready|=program.groups[i];
  for(size_t i=0;i<program.constraint_count;i++){
   const auto&c=program.constraints[i];uint32_t left=out.addresses[size_t(c.left)];bool valid=false;
-  if(c.right<0){bool decoded=false;int64_t value=instruction_immediate(image.word(left),&decoded);valid=left&&decoded&&value==c.delta;}
+  if(c.right<0){bool decoded=false;int64_t value=instruction_immediate(image.word(left),&decoded);valid=left&&decoded&&(c.kind==ConstraintKind::Minimum?value>=c.delta:value==c.delta);}
   else {uint32_t right=out.addresses[size_t(c.right)];valid=left&&right&&int64_t(left)-int64_t(right)==c.delta;}
-  if(!valid){ready&=~c.group;out.diagnostic+=c.right<0?"Dart object/frame layout constraint failed; ":"Dart allocation return-PC constraint failed; ";}
+  if(!valid){ready&=~c.group;out.diagnostic+=c.kind==ConstraintKind::Minimum?"Dart frame is smaller than the adapter ABI requires; ":c.right<0?"Dart object/frame layout constraint failed; ":"Dart allocation return-PC constraint failed; ";}
  }
  auto target_address=[&](const Target&t)->uint64_t{
   if(t.kind==1)return adapter_address(out,t.source);
@@ -218,20 +414,66 @@ bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolv
   return live+address;
  };
  std::vector<std::vector<uint8_t>>payloads;payloads.reserve(program.unit_count);std::vector<uintptr_t>locations;
+ std::vector<bool>selected(program.unit_count,true);
+ constexpr unsigned wrap_groups=HG_WIDGET_VECTOR|HG_WIDGET_COMPOUND;
+ std::vector<std::pair<unsigned,const char*>>unresolved_wrapping;
  for(size_t i=0;i<program.unit_count;i++){
   const auto&unit=program.units[i];uintptr_t address=unit.shadow?adapter_address(out,unit.source):(unit.anchor>=0&&out.addresses[size_t(unit.anchor)]?live+out.addresses[size_t(unit.anchor)]:0);
   locations.push_back(address);payloads.emplace_back(unit.bytes,unit.bytes+unit.size);
+  bool wrap_unit=program.widget_wrap&&i==program.widget_wrap->unit;
+  if(wrap_unit&&(ready&HG_WIDGET_COMPOUND)){selected[i]=false;continue;}
+  if(unit.guard>=0){
+   if(locator.candidates(size_t(unit.guard))>1){ready&=~uint32_t(unit.group);out.diagnostic+=std::string(unit.label)+": ambiguous layout; ";}
+   selected[i]=(out.addresses[size_t(unit.guard)]!=0)==unit.when_guard_matches;
+   if(!selected[i])continue;
+  }
   bool ok=address&&(unit.shadow||image.executable(address-live,unit.size));
   for(unsigned j=0;j<unit.relocation_count&&ok;j++){
    const auto&r=unit.relocations[j];uint64_t dest=target_address(r.target);uint32_t word=0;
    if(r.offset+4>unit.size||!dest){ok=false;break;}
    if(r.kind==8)word=image.word(dest-live);
+   else if(r.kind==9||r.kind==10){
+    uint32_t original=image.word(dest-live),reg=original&31;
+    if(r.kind==9){
+     ok=(original&0xffe00fe0)==0xf80003a0&&reg<29; // stur xReg,[Dart FP,#slot]
+     word=(r.original&0xfffffc00)|(reg<<5)|reg; // orr wReg,wReg,#0xffffff
+    }else{
+     ok=(original&0xffffffe0)==0x36000040&&reg<29; // tbz wReg,#0,store
+     word=0x92800020|reg; // Dart Smi(-1), the default white ARGB
+    }
+   }
    else ok=encode_relative(r.original,address+r.offset,dest,r.kind,word);
    if(!ok){char detail[192];snprintf(detail,sizeof(detail),"relocation source=%x+%x kind=%u pc=%llx destination=%llx; ",unit.source,r.offset,r.kind,(unsigned long long)(address+r.offset),(unsigned long long)dest);out.diagnostic+=detail;}
    if(ok)memcpy(payloads.back().data()+r.offset,&word,4);
   }
-  if(!ok){ready&=~uint32_t(unit.group);out.diagnostic+=std::string(unit.label)+": unresolved address/relocation; ";}
+  if(!ok){
+   if(wrap_unit)selected[i]=false;
+   else{
+    ready&=~uint32_t(unit.group);
+    if(program.widget_wrap&&(unit.group&wrap_groups)){
+     selected[i]=false;unresolved_wrapping.emplace_back(unit.group,unit.label);
+    }else out.diagnostic+=std::string(unit.label)+": unresolved address/relocation; ";
+   }
+  }
  }
+ if(program.widget_wrap){
+  const auto&wrap=*program.widget_wrap;
+  if((ready&HG_WIDGET_ARTWORK)&&plan_background_filter(image,live,out.addresses[size_t(wrap.image_filter_anchor)],
+    adapter_address(out,wrap.image_filter),out.patches)){
+   for(size_t i=0;i<program.unit_count;i++)if(program.units[i].anchor==wrap.image_filter_anchor)selected[i]=false;
+   out.adapted_widget_paths|=HG_WIDGET_ARTWORK;
+  }
+  if((ready&4)&&!(ready&HG_WIDGET_VECTOR)){
+   uint64_t source=out.addresses[size_t(wrap.filter_anchor)];
+   if(source&&plan_vector_filters(image,live,live+source,out.patches))out.adapted_widget_paths|=HG_WIDGET_VECTOR;
+  }
+  if(selected[wrap.unit]){
+   if((ready&4)&&plan_compound_wrapping(image,live,wrap,out))out.adapted_widget_paths|=HG_WIDGET_COMPOUND;
+   selected[wrap.unit]=(out.adapted_widget_paths&HG_WIDGET_COMPOUND)!=0;
+  }
+  ready|=out.adapted_widget_paths;
+ }
+ for(const auto&failure:unresolved_wrapping)if(!(out.adapted_widget_paths&failure.first))out.diagnostic+=std::string(failure.second)+": unresolved address/relocation; ";
  std::array<uint32_t,32>config{};std::array<bool,32>known{};
  for(size_t i=0;i<program.config_count;i++){
   const auto&rule=program.config[i];uint32_t pc=rule.anchor>=0?out.addresses[size_t(rule.anchor)]:0;uint64_t value=0;bool valid=pc!=0;
@@ -255,28 +497,31 @@ bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolv
    memcpy(payloads[i].data(),config.data(),program.config_count*4);
   }
  }
- // Monochrome widget artwork branches into the widget adapters.
- if(!(ready&4))ready&=~16u;
+ // Each monochrome route still needs the common widget adapters.
+ if(!(ready&4))ready&=~uint32_t(HG_WIDGET_MONOCHROME);
+ if((ready&4)&&program.widget_wrap&&!image.named("DensitySemantics.layoutDensity").empty()&&
+    !plan_widget_layout_density(image,live,out.patches))out.diagnostic+="Android widget layout-density conversion unresolved; ";
  if((ready&2)&&!strcmp(program.image,"libapp.so")){
   for(const char*name:{"SfAnimIconCapture._buildLayersFromIconInfo","SfWindowAnimImplementor.prepareIconLayers"})if(!prefer_live_boundary(image,live,name,out.patches,out.diagnostic)){
    ready&=~2u;out.diagnostic+="live icon boundary cache guard unresolved; ";break;
   }
  }
  for(size_t i=0;i<program.unit_count;i++){
-  const auto&unit=program.units[i];if(!(ready&unit.group))continue;
+  const auto&unit=program.units[i];if(!selected[i]||!(ready&unit.group))continue;
   if(unit.shadow){
    if(allocate){uintptr_t begin=locations[i]&~uintptr_t(page-1),end=(locations[i]+unit.size+page-1)&~uintptr_t(page-1);if(mprotect(reinterpret_cast<void*>(begin),end-begin,PROT_READ|PROT_WRITE)){ready&=~uint32_t(unit.group);out.diagnostic+="private adapter mapping failed; ";continue;}memcpy(reinterpret_cast<void*>(locations[i]),payloads[i].data(),unit.size);}
   }else for(size_t offset=0;offset<unit.size;offset+=256){Patch patch{};patch.address=locations[i]+offset;patch.size=uint32_t(std::min<size_t>(256,unit.size-offset));patch.group=unit.group;memcpy(patch.bytes,payloads[i].data()+offset,patch.size);memcpy(patch.original,image.at(locations[i]-live+offset,patch.size),patch.size);out.patches.push_back(patch);}
  }
  if(allocate)for(size_t i=0;i<program.unit_count;i++){
-  const auto&unit=program.units[i];if(!unit.shadow||!(ready&unit.group))continue;
+  const auto&unit=program.units[i];if(!selected[i]||!unit.shadow||!(ready&unit.group))continue;
   __builtin___clear_cache(reinterpret_cast<char*>(locations[i]),reinterpret_cast<char*>(locations[i]+unit.size));
   uintptr_t begin=locations[i]&~uintptr_t(page-1),end=(locations[i]+unit.size+page-1)&~uintptr_t(page-1);
   if(mprotect(reinterpret_cast<void*>(begin),end-begin,PROT_READ|PROT_EXEC)){ready&=~uint32_t(unit.group);out.diagnostic+="private adapter execute protection failed; ";}
  }
- bool shadow_used=false;for(size_t i=0;i<program.unit_count;i++)if(program.units[i].shadow&&(ready&program.units[i].group))shadow_used=true;
+ bool shadow_used=false;for(size_t i=0;i<program.unit_count;i++)if(selected[i]&&program.units[i].shadow&&(ready&program.units[i].group))shadow_used=true;
  if(allocate&&out.shadow&&!shadow_used){munmap(reinterpret_cast<void*>(out.shadow),out.shadow_size);out.shadow=0;out.shadow_size=0;out.adapter_pages.clear();}
  out.patches.erase(std::remove_if(out.patches.begin(),out.patches.end(),[&](const Patch&p){return !(ready&p.group);}),out.patches.end());out.ready=ready;
+ out.adapted_widget_paths&=ready;
  if(!error.empty())out.diagnostic+=error;
  return ready!=0;
 }

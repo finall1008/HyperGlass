@@ -28,6 +28,8 @@ class Unit:
  anchor:int=-1
  relocations:list=field(default_factory=list)
  code_ranges:list=field(default_factory=list)
+ guard:int=-1
+ when_guard_matches:bool=True
 @dataclass
 class Config:
  slot:int
@@ -39,6 +41,7 @@ class Config:
 class Catalog:
  def __init__(self,image):
   self.model=Model(image);self.units=[];self.config=[];self.config_source=0;self.constraints=[]
+  self.widget_wrap=None
   self.md=Cs(CS_ARCH_ARM64,CS_MODE_ARM);self.md.detail=True
  def add_elf(self,path,sections,group,physical=()):
   e=ELFFile(open(path,'rb'));symbols=list(e.get_section_by_name('.symtab').iter_symbols())
@@ -58,6 +61,7 @@ class Catalog:
   if unit:
    if unit.shadow:return Target(va,-1,1)
    return Target(va-unit.source,unit.anchor,3)
+  if self.widget_wrap and va==0xa95d38:return Target(0,self.widget_wrap[1],2)
   if va==0x1b1495c:
    index=self.model.add(va,frames=False,control=True);anchor=self.model.anchors[index]
    anchor.mode=5;anchor.dependency=self.model.add(0x1b147a4,frames=False,control=True)
@@ -72,9 +76,12 @@ class Catalog:
    if va in skip or self.unit_at(va):continue
    group=1 if i<style_count else 2
    if va in [0x148af68,0x148b0a4]:group=32
-   if va in [0x10e5e00,0xc42d84,0xc42e2c,0xc43c28,0xc43cb4,0x10e3798,0x1642578,0x10c58c8,0x173d854,0x10d4bc0,0xfc6748,0xfc7638,0xfc84a8,0x148083c,0x1480844,0x1480914,0x1480a00,0x1480b78]:group=4
-   # Optional monochrome widget artwork; requires the widget adapters (group 4).
-   if va in [0x163e208,0x163e2a8,0xf18508,0x10c57cc,0x10c6a60,0x10c7180,0x10e271c,0x12908f0,0x185ce78,0x185d4a0]:group=16
+   if va in [0x10e5e00,0xc42d84,0xc42e2c,0xc43c28,0xc43cb4,0xc43cb8,0x10e3798,0x1642578,0x10c58c8,0x173d854,0x10d4bc0,0xfc5fd0,0xfc69cc,0xfc76c4,0x148083c,0x1480844,0x1480914,0x1480a00,0x1480b78]:group=4
+   # Optional artwork paths share the setting and the widget adapters, with
+   # separate ABI checks for vector and compound drawables.
+   if va in [0x163e208,0x163e2a8,0xf18508,0x10c57cc,0x10c6a60,0x10c7180,0x185ce78,0x185d4a0]:group=16
+   if va==0x12908f0:group=64
+   if va==0x10e271c:group=128
    control=va in [0x18c3a6c,0x1b147a4,0x148083c,0x1480844,0x1480a00,0x1480b78,0x185d4a0]
    anchor=self.model.add(va,frames=False if control else None,control=control)
    unit=Unit(r.get('reason',hex(va)),va,data,group,False,anchor,code_ranges=[(va,va+len(data))]);self.units.append(unit)
@@ -136,6 +143,13 @@ class Catalog:
     if struct.unpack_from('<I',unit.data,q-unit.source)[0]==old:positions.append(q)
    if len(positions)!=1:raise ValueError(('missing replay',symbol,positions,hex(old)))
    q=positions[0];unit.relocations.append(Reloc(q-unit.source,8,Target(reference,self.model.add(reference,frames=False if symbol.startswith('source_tag_') else None),0),old))
+   if symbol in ('android_text_inline','android_spanned_text','android_hint_text'):
+    color_mask=struct.unpack_from('<I',unit.data,q-unit.source-4)[0]
+    unit.relocations.append(Reloc(q-unit.source-4,9,Target(reference,self.model.add(reference),0),color_mask))
+  default_text=self.unit_at(0xc42e2c)
+  default_text.relocations.append(Reloc(0,10,Target(0xc42d7c,self.model.add(0xc42d7c),0),0))
+  span_store=0xc43cb8;span=self.unit_at(syms['span_direct'])
+  span.relocations.append(Reloc(4,8,Target(span_store,self.model.add(span_store),0),0))
   for symbol,reference in [('badge_text_replay',0x148af68),('badge_white_pool',0x148af5c)]:
    pc=syms[symbol];unit=self.unit_at(pc);assert unit
    for offset in range(0,8 if symbol=='badge_white_pool'else 4,4):
@@ -150,33 +164,76 @@ class Catalog:
   for slot,pc in [(6,0x19bf008),(9,0x1b151a8),(10,0xa07b58),(11,0xade798),(12,0x15c7ddc),(13,0xade994),(14,0xade920),(16,0xbf6c08),(19,0xe02fcc),(20,0xe036e0),(21,0xc2e138),(22,0xc5cf50),(23,0xc0f434),(24,0xc0f4ac),(25,0xbf6bdc),(26,0xc2e148),(27,0xc2e14c),(28,0xc2e198)]:self.config.append(Config(slot,2,-1,self.model.add(pc,frames=False)))
   self.config.append(Config(29,2,-1,self.model.add(0x15e183c,frames=False)))
  def report(self,target):
-  cache={};missing=[]
-  for i,a in enumerate(self.model.anchors):
-   if self.model.resolve(target,i,cache)is None:missing.append((i,hex(a.va),a.owner,a.mode))
+  cache={}
+  for i in range(len(self.model.anchors)):self.model.resolve(target,i,cache)
+  required={c.anchor for c in self.config}
+  for _,left,right,*_ in self.constraints:required.update((left,right))
+  for unit in self.units:
+   if unit.guard>=0 and (cache[unit.guard] is not None)!=unit.when_guard_matches:continue
+   required.add(unit.anchor)
+   required.update(r.target.anchor for r in unit.relocations)
+  missing=[(i,hex(a.va),a.owner,a.mode)for i,a in enumerate(self.model.anchors)if i in required and cache[i] is None]
   return cache,missing
  def emit(self,name):
   out=[]
   def array(label,values,ctype):out.append('static const '+ctype+' '+label+'[]={'+(','.join(values)if values else'0')+'};')
   for i,a in enumerate(self.model.anchors):
    array(f'{name}_v{i}',[hex(w)for w in a.values],'uint32_t');array(f'{name}_m{i}',[hex(w)for w in a.masks],'uint32_t')
-  array(name+'_anchors',['{'+','.join([json.dumps(a.owner),hex(a.va),str(a.before),str(len(a.values)),str(a.mode),str(a.dependency),str(a.qualifier),json.dumps(a.callee),str(a.delta),f'{name}_v{i}',f'{name}_m{i}'])+'}'for i,a in enumerate(self.model.anchors)],'hg::Anchor')
+   if a.relations:array(f'{name}_rr{i}',['{'+','.join(map(str,r))+'}'for r in a.relations],'hg::RegisterRelation')
+  array(name+'_anchors',['{'+','.join([json.dumps(a.owner),hex(a.va),str(a.before),str(len(a.values)),str(a.mode),str(a.dependency),str(a.qualifier),json.dumps(a.callee),str(a.delta),f'{name}_v{i}',f'{name}_m{i}',f'{name}_rr{i}'if a.relations else'nullptr',str(len(a.relations)),str(int(a.follow_helpers))])+'}'for i,a in enumerate(self.model.anchors)],'hg::Anchor')
   for i,u in enumerate(self.units):
    array(f'{name}_b{i}',[hex(b)for b in u.data],'uint8_t')
    if u.relocations:array(f'{name}_r{i}',['{'+','.join([str(r.offset),str(r.kind),'{'+','.join([hex(r.target.source),str(r.target.anchor),str(r.target.kind)])+'}',hex(r.original)])+'}'for r in u.relocations],'hg::Relocation')
-  array(name+'_units',['{'+','.join([json.dumps(u.label),hex(u.source),str(len(u.data)),str(u.anchor),str(u.group),str(int(u.shadow)),f'{name}_b{i}',f'{name}_r{i}'if u.relocations else'nullptr',str(len(u.relocations))])+'}'for i,u in enumerate(self.units)],'hg::Unit')
+  array(name+'_units',['{'+','.join([json.dumps(u.label),hex(u.source),str(len(u.data)),str(u.anchor),str(u.group),str(int(u.shadow)),f'{name}_b{i}',f'{name}_r{i}'if u.relocations else'nullptr',str(len(u.relocations)),str(u.guard),str(int(u.when_guard_matches))])+'}'for i,u in enumerate(self.units)],'hg::Unit')
   if self.config:array(name+'_config',['{'+','.join([str(x.slot),str(x.kind),str(x.subtract),str(x.anchor),hex(x.source_tag)])+'}'for x in self.config],'hg::Config')
   groups=sorted({u.group for u in self.units if u.group&(u.group-1)==0});array(name+'_groups',[str(g)for g in groups],'uint32_t')
   if self.constraints:array(name+'_constraints',['{'+','.join(map(str,c))+'}'for c in self.constraints],'hg::Constraint')
   image=self.model.image.path.name
-  out.append('static const hg::Program '+name+'={'+','.join([json.dumps(image),name+'_anchors',str(len(self.model.anchors)),name+'_units',str(len(self.units)),name+'_config'if self.config else'nullptr',str(len(self.config)),hex(self.config_source),name+'_groups',str(len(groups)),name+'_constraints'if self.constraints else'nullptr',str(len(self.constraints))])+'};')
+  if self.widget_wrap:out.append('static const hg::WidgetWrap '+name+'_widget_wrap={'+','.join(map(str,self.widget_wrap))+'};')
+  out.append('static const hg::Program '+name+'={'+','.join([json.dumps(image),name+'_anchors',str(len(self.model.anchors)),name+'_units',str(len(self.units)),name+'_config'if self.config else'nullptr',str(len(self.config)),hex(self.config_source),name+'_groups',str(len(groups)),name+'_constraints'if self.constraints else'nullptr',str(len(self.constraints)),'&'+name+'_widget_wrap'if self.widget_wrap else'nullptr'])+'};')
   return '\n'.join(out)
+
+def widget_anchors(model):
+ # Validate the Dart tagged-int unbox and three channel shifts as one
+ # sequence. Register assignments may move together, including into a helper.
+ argb_masks=(0xfffffc00,0xffffffe0,0xfffffc00,0xffe00fe0,0xfffffc00,0xfffffc00,0xffe00fe0,0xfffffc00,0xffe00fe0)
+ argb_relations=((0,5,1,0),(0,5,2,5),(0,0,2,0),(0,0,3,0),(0,0,4,5),(0,0,5,5),(0,0,7,5),(5,0,6,0),(7,0,8,0))
+ for store,prologue,helper in [(0x10e5e00,False,True),(0xc42d84,True,False),(0x10e3798,False,False)]:
+  masks=argb_masks;relations=argb_relations;start=store-12
+  if prologue:
+   start-=12
+   masks=(0xfffffc1f,0xff00001f,0xffc003ff)+masks
+   relations=tuple((i+3,a,j+3,b)for i,a,j,b in relations)+((0,5,3,5),)
+  for pc in (store,store+4):model.operand_sequence(pc,start,masks,relations,follow_helpers=helper)
+  if prologue:
+   for pc in (store-16,store-8):model.operand_sequence(pc,start,masks,relations)
+ index=model.branch_destination(0xc42e2c,0xc42d84,-20,(0,2));a=model.anchors[index]
+ a.masks=(0xffc003e0,0xffc00000);a.relations=((0,0,1,0),(0,0,1,5))
+ for pc in (0x173d854,0x173d858):model.add(pc,window=((pc-0x173d854)//4,(0x173d868-pc)//4))
+ for pc in [0xfc5fd0,0xfc69cc,0xfc76c4]:
+  model.named_call(pc,'RenderViewDecorationMixin.paintViewBackground')
+ model.add(0xc19da0,frames=False,window=(5,4))
+ model.add(0xc2e648,frames=False,window=(5,5))
+ # addChild can gain an insertion path before the original append. Match
+ # the owner-to-list load and both array accesses by their shared register.
+ start=0xc2e138
+ list_masks=(0xffe0001f,0xfffffc00,0xfffffc00,0xffe00fe0,0xffe00c1f,0xffe00c1f,0xfffffc00)
+ list_relations=((1,0,2,0),(1,0,2,5),(1,0,3,0),(1,0,4,5),(1,0,5,5),(5,0,6,0),(5,0,6,5))
+ for pc in (start,0xc2e148,0xc2e14c):model.operand_sequence(pc,start,list_masks,list_relations)
+ for pc in (0x10c57cc,0x10c6a60):model.add(pc,frames=False,window=(4,4))
+ model.named_call(0xf18508,'Drawable.updateBlendModeFilter',follow_helpers=True)
+ call=model.named_call(0xc43c24,'ForegroundColorSpanImpl.color')
+ model.after_call(0xc43cb8,call,4,(0,6))
+ model.after_call(0xc43cbc,call,8,(1,5))
 
 def catalogs():
  a=Catalog(REFS/'launcher-801027722/libapp.so')
+ widget_anchors(a.model)
  a.add_elf(EX/'icons/processor.elf',['.text.helper','.text'],1)
  a.add_elf(EX/'transitions/boundary.elf',['.message','.selector','.initialize'],2,physical=(0x1722030,))
  a.add_elf(EX/'transitions/capture.elf',['.capture_root','.hooks','.capture_small','.limit_test'],2)
  a.add_elf(EX/'transitions/capture.elf',['.text_color','.widget_helpers'],4)
+ a.add_elf(EX/'transitions/capture.elf',['.widget_spans'],4)
  a.add_elf(EX/'transitions/capture.elf',['.badge'],32)
  # The allocation-free black text adapter writes only a fresh Color's RGB.
  for pc in [0x1749cdc,0x1749cfc,0x1749d18,0x1749d34]:
@@ -184,9 +241,23 @@ def catalogs():
   a.constraints.append((32,a.model.add(pc),-1,value))
  a.add_elf(EX/'transitions/capture.elf',['.capture_config','.capture_meta','.bridge'],6)
  rows=json.loads((EX/'transitions/profile.json').read_text())['patches'];a.add_rows(rows,len(json.loads((EX/'icons/profile.json').read_text())['patches']))
+ span_guard=a.model.add(0xc43cb8)
+ for pc,when in [(0xc43c28,False),(0xc43cb4,False),(0xc43cb8,True),(0x2000040,True)]:
+  unit=a.unit_at(pc);unit.guard=span_guard;unit.when_guard_matches=when
  a.add_config()
+ # The opacity adapter compares actual return PCs, even when its callers
+ # rearrange the instructions that consume the result.
+ for pc in [0x10c69f0,0x10c5778,0x10cfff0,0x10d367c]:
+  a.model.named_call(pc,'_ImageViewState._applyImageAlphaIfNeeded',delta=4)
  for name,group in [('ImageFilterGroup.processAll',1),('IconRenderer.renderThemed',1),('OffsetLayer.toImage',2),('OffsetLayer._createSceneForImage',2),('IconCaptureUtil._imageToResult',2),('ShortcutIconWidget._addMessage',2),('AppInfoModel.getcomponentNameString',2)]:
-  function=a.model.image.names[name][0];pc=function[0]+8;anchor=a.model.add(pc,frames=True)
+  function=a.model.image.names[name][0];pc=function[0]+8
+  grows=name=='ImageFilterGroup.processAll'
+  anchor=a.model.add(pc,frames=not grows)
+  if grows:
+   recipe=a.model.anchors[anchor]
+   # Keep all operand and saved-slot checks except the frame allocation size.
+   recipe.masks=tuple(mask if i==recipe.before else arm_mask(word,True)for i,(word,mask)in enumerate(zip(recipe.values,recipe.masks)))
+   a.constraints.append((group,anchor,-1,0x170,'hg::ConstraintKind::Minimum'))
   a.units.append(Unit('Dart frame ABI: '+name,pc,b'',group,False,anchor))
  a.constraints.append((2,a.model.add(0x1722088),a.model.add(0x1722030),0x58))
  # Core Dart object offsets used by allocation-free adapters must retain their
@@ -194,6 +265,17 @@ def catalogs():
  for pc in [0x15edb70,0x15edba0,0x11f8168,0x11f81ac,0xa030a4,0xa03338,0xa03350,0xfa9b7c,0xfa9cb0,0xfb4d50,0x1562774,0x191a5f4,0x191a5f8]:
   value=immediate(struct.unpack('<I',a.model.image.read(pc,4))[0])
   a.constraints.append((2,a.model.add(pc,frames=False),-1,value))
+ # The wrap adapter uses the proven two-call ColorFiltered allocation route.
+ # Preserve its Dart frame and validate the full success path and its stores.
+ factory=0x111bd64;call=0x111bda0
+ masks=tuple(arm_mask(w)for w in words(a.model.image.read(factory,0x7c)))
+ for pc in (call,call+8,0x111bdbc):a.model.operand_sequence(pc,factory,masks,())
+ capture=EX/'transitions/capture.elf'
+ with capture.open('rb') as stream:
+  symbols={s.name:s['st_value']for s in ELFFile(stream).get_section_by_name('.symtab').iter_symbols()}
+ a.widget_wrap=(len(a.units),a.model.by_va[call],a.model.add(0x17458e4),a.model.by_va[0x10c7180],*(symbols['wrap_'+name]for name in ('compound_widget','filter_dispatch','filter_resume')),symbols['widget_image_filter'])
+ a.add_elf(capture,['.widget_wrap'],128)
+ a.add_elf(capture,['.widget_image_filter'],16)
  a.relocate()
  e=Catalog(REFS/'launcher-801027722/libhyper_os_flutter.so')
  for line in (EX/'engine-patches.txt').read_text().splitlines():

@@ -5,6 +5,12 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+enum {
+ HG_WIDGET_ARTWORK = 16,
+ HG_WIDGET_VECTOR = 64,
+ HG_WIDGET_COMPOUND = 128,
+ HG_WIDGET_MONOCHROME = HG_WIDGET_ARTWORK | HG_WIDGET_VECTOR | HG_WIDGET_COMPOUND,
+};
 struct hg_patch {
  uintptr_t address;
  uint32_t size;

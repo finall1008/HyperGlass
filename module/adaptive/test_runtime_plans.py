@@ -210,22 +210,128 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
  assert bytes(u.mem_read(buffer,len(expected)))==expected and wi(u,array+0x13)==len(expected)*2
  assert qi(u,0x2fefe8)==array and qi(u,0x2fefd0)==171 and qi(u,0x2fefd8)==171
  # Relocated inline foreground hooks replay the actual compiler's store slots.
- image=ELFFile(open(imagepath,'rb'))
- for label,site,reg in [('android_text_inline',0x10e5e00,4),('android_spanned_text',0xc42d84,3),('android_hint_text',0x10e3798,0)]:
+ for label,site in [('android_text_inline',0x10e5e00),('android_spanned_text',0xc42d84),('android_hint_text',0x10e3798)]:
+  store=struct.unpack('<I',target.read(address(site)-base,4))[0];reg=store&31
   u=setup();u.reg_write(regs[reg],0x7f22cc99)
   u.emu_start(address(symbols[label]),address(site)+4,count=100)
-  va=address(site)-base
-  segment=next(s for s in image.iter_segments()if s['p_type']=='PT_LOAD'and s['p_vaddr']<=va<va+4<=s['p_vaddr']+s['p_filesz'])
-  image.stream.seek(segment['p_offset']+va-segment['p_vaddr']);store=struct.unpack('<I',image.stream.read(4))[0]
-  slot=(store>>12)&511;slot=slot-512 if slot&256 else slot
-  assert qi(u,0x2fa000+slot)==0x7fffffff
+  assert qi(u,0x2fa000+immediate(store))==0x7fffffff
+ # Both rich-text layouts retain the supplied alpha, including the old
+ # renderer's separate combined-alpha path.
+ for alpha in (0,0x7f,0xff):
+  u=setup();u.reg_write(regs[0],(alpha<<24)|0x22cc99)
+  if anchors[0xc43cb8]:
+   site=address(0xc43cb8);store=struct.unpack('<I',target.read(site-base,4))[0]
+   u.emu_start(site,site+4,count=100)
+   assert qi(u,0x2fa000+immediate(store))==(alpha<<24)|0xffffff
+  else:
+   site=address(0xc43c28);u.emu_start(site,site+4,count=100)
+   assert u.reg_read(regs[1])==(alpha<<24)|0xffffff
+   u.reg_write(regs[2],alpha<<24);site=address(0xc43cb4);u.emu_start(site,site+4,count=100)
+   assert u.reg_read(regs[0])==(alpha<<24)|0xffffff
+ for site in (0xfc5fd0,0xfc69cc,0xfc76c4):
+  u=setup();at=address(site)
+  original=struct.unpack('<I',target.read(at-base,4))[0]
+  assert any(s[0]==branch_target(original,at-base)for s in target.names['RenderViewDecorationMixin.paintViewBackground'])
+  u.emu_start(at,at+4,count=10)
+  assert u.reg_read(regs[0])==nil
  for label,site,reg in [('maml_text_color',0x1642578,4),('maml_filter_color',0x163e208,3)]:
   u=setup();col=heap+0x25001;ds(u,col+7,[0.6,0.2,0.4,0.8]);u.reg_write(regs[0],col)
   u.emu_start(address(symbols[label]),address(site)+4,count=100)
   assert struct.unpack('<4d',u.mem_read(col+7,32))==(0.6,1.0,1.0,1.0) and u.reg_read(regs[reg])==col
- for site in [0xf18508,0x10c57cc,0x10c6a60,0x10c7180,0x12908f0,0x163e2a8,0x185ce78,0x10e271c]:
-  word=struct.unpack('<I',u.mem_read(address(site),4))[0]
-  assert branch_target(word,address(site))==address(0x17458e4)
+ adapted=p.get('adapted_widget_paths',0)
+ if adapted&128:
+  filter_call=address(0x111bda0);load_child=address(0x111bdbc);allocate_call=load_child+4
+  original_call=struct.unpack('<I',target.read(allocate_call-base,4))[0]
+  allocator=branch_target(original_call,allocate_call)
+  filter_value,child,widget=[heap+off for off in (0x15001,0x16001,0x17001)]
+  return_pc=0x3ef000
+  entry=address(symbols['wrap_compound_widget'])
+  site,= [at for at,raw,group in p['patches'] if group==128 and len(raw)==8
+          and branch_target(struct.unpack('<I',bytes.fromhex(raw))[0],at)==entry]
+  u=setup();u.reg_write(regs[2],child);u.reg_write(regs[30],return_pc);calls=[]
+  frame=u.reg_read(regs[29]);stack=u.reg_read(regs[15]);native_stack=u.reg_read(R.UC_ARM64_REG_SP)
+  def wrap_calls(u,pc,size,data):
+   if pc==address(0x17458e4):
+    assert u.reg_read(regs[30])==filter_call+4
+    assert qi(u,u.reg_read(regs[29])-8)==child
+    calls.append('filter');u.reg_write(regs[0],filter_value)
+   elif pc==allocator:
+    assert u.reg_read(regs[30])==allocate_call+4
+    assert qi(u,u.reg_read(regs[29])-0x18)==filter_value
+    calls.append('allocator');u.reg_write(regs[0],widget)
+   else:return
+   u.reg_write(R.UC_ARM64_REG_PC,u.reg_read(regs[30]))
+  u.hook_add(UC_HOOK_CODE,wrap_calls);u.emu_start(site,return_pc,count=200)
+  assert calls==['filter','allocator'] and u.reg_read(regs[0])==widget
+  assert wi(u,widget+0xb)==child&0xffffffff and wi(u,widget+0xf)==filter_value&0xffffffff
+  assert u.reg_read(regs[29])==frame and u.reg_read(regs[15])==stack and u.reg_read(R.UC_ARM64_REG_SP)==native_stack
+  # Stock calls into the shared factory still dispatch to their original
+  # setState and replay the original load of the receiver on return.
+  u=setup();fp=u.reg_read(regs[29]);q(u,fp-0x10,child);u.reg_write(regs[1],child)
+  set_state=branch_target(struct.unpack('<I',target.read(filter_call-base,4))[0],filter_call)
+  def state_return(u,pc,size,data):
+   assert u.reg_read(regs[1])==child and u.reg_read(regs[30])==filter_call+4
+   u.reg_write(regs[0],nil);u.reg_write(R.UC_ARM64_REG_PC,filter_call+4)
+  u.hook_add(UC_HOOK_CODE,state_return,begin=set_state,end=set_state)
+  u.emu_start(filter_call,filter_call+8,count=50)
+  assert u.reg_read(regs[0])==child
+  print('PASS original Dart wrapper keeps both call return PCs, original child, canonical filter, and frame:',Path(planpath).name,flush=True)
+ if adapted&16:
+  site=address(0x10c7180);resume=site+4
+  matrix=address(0x17458e4);getter=0x3f0800
+  for background_only,callee in [(True,getter),(False,matrix)]:
+   u=setup();state=heap+0x12001;receiver=heap+0x14001;result=heap+0x15001
+   q(u,u.reg_read(regs[29])-0x10,state);w(u,state+0x3b,nil+(0x20 if background_only else 0x30))
+   q(u,0x320000+8*5,getter);u.reg_write(regs[21],0x320000);u.reg_write(regs[30],5);u.reg_write(regs[1],receiver)
+   reached=[]
+   def filter_return(u,pc,size,data):
+    assert u.reg_read(regs[30])==resume and u.reg_read(regs[1])==receiver
+    reached.append(pc);u.reg_write(regs[0],result);u.reg_write(R.UC_ARM64_REG_PC,resume)
+   u.hook_add(UC_HOOK_CODE,filter_return,begin=callee,end=callee)
+   u.emu_start(site-4,resume,count=20)
+   assert reached==[callee] and u.reg_read(regs[0])==result
+  print('PASS background-only drawables keep a single matrix and the original getter return PC:',Path(planpath).name,flush=True)
+ if adapted&64:
+  matrix=address(0x17458e4);filter_value=heap+0x15001
+  for name in ('_VectorDrawableBoxState._buildLiveCached','_VectorDrawableBoxState._renderScene'):
+   symbol,size,_=target.names[name][0]
+   sites=[at for at,raw,group in p['patches'] if group==64 and base+symbol<=at<base+symbol+size]
+   select,call,resume=sorted(sites)
+   u=setup();assert branch_target(struct.unpack('<I',u.mem_read(call,4))[0],call)==matrix
+   assert branch_target(struct.unpack('<I',u.mem_read(select,4))[0],select)==select+12
+   join=branch_target(struct.unpack('<I',u.mem_read(resume+4,4))[0],resume+4)
+   def matrix_return(u,pc,size,data):
+    assert u.reg_read(regs[30])==resume
+    u.reg_write(regs[0],filter_value);u.reg_write(R.UC_ARM64_REG_PC,resume)
+   u.hook_add(UC_HOOK_CODE,matrix_return,begin=matrix,end=matrix);u.emu_start(call,join,count=20)
+   assert u.reg_read(regs[3])==filter_value
+  print('PASS vector live renderers replace the original filter and retain the original safepoints:',Path(planpath).name,flush=True)
+ if target.names['DensitySemantics.layoutDensity']:
+  density=base+target.names['DensitySemantics.physicalDensity'][0][0]
+  sources={s[0]+base for name in ('DensitySemantics.layoutDensity','DensitySemantics.dimensionDensity') for s in target.names[name]}
+  density_sites=[]
+  for at,raw,group in p['patches']:
+   word=struct.unpack('<I',bytes.fromhex(raw))[0]if len(raw)==8 else 0
+   if group==4 and word&0xfc000000==0x94000000 and branch_target(word,at)==density:density_sites.append(at)
+  assert density_sites
+  for site in density_sites:
+   original=struct.unpack('<I',target.read(site-base,4))[0]
+   assert branch_target(original,site)in sources
+   u=setup()
+   for reg,value in [(R.UC_ARM64_REG_D0,0.95),(R.UC_ARM64_REG_D1,3.0)]:
+    u.reg_write(reg,struct.unpack('<Q',struct.pack('<d',value))[0])
+   u.emu_start(site,site+4,count=60)
+   actual=struct.unpack('<d',struct.pack('<Q',u.reg_read(R.UC_ARM64_REG_D0)))[0]
+   assert abs(actual-3.0/0.95)<1e-12
+  print('PASS Android resource layout and text use the original host density conversion:',Path(planpath).name,flush=True)
+ for group,sites in [(16,[0xf18508,0x10c57cc,0x10c6a60,0x10c7180,0x163e2a8,0x185ce78]),(64,[0x12908f0]),(128,[0x10e271c])]:
+  if adapted&group:continue
+  if p['ready']&group:
+   for site in sites:
+    word=struct.unpack('<I',u.mem_read(address(site),4))[0]
+    assert branch_target(word,address(site))==address(0x17458e4)
+  else:
+   assert all(not(patch_group&group)for _,_,patch_group in p['patches'])
  assert 7<=cfg[6]<2048 and cfg[6]%4==3
  fp=cfg[9]-(1<<32)if cfg[9]>>31 else cfg[9];assert -2048<=fp<0 and fp%8==0
  print('PASS native relocated viewport/crop, closing marker, vector ABI, compiler store replay:',Path(planpath).name,flush=True)

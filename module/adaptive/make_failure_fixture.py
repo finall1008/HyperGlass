@@ -12,6 +12,10 @@ elif mode=='badge-layout':
  at=offset(0x1749cfc);w=struct.unpack_from('<I',raw,at)[0];struct.pack_into('<I',raw,at,(w&~(511<<12))|(0x2f<<12))
 elif mode=='widget-layout':
  pc=0xc1e528;target=branch_target(struct.unpack('<I',image.read(pc,4))[0],pc);at=offset(target);w=struct.unpack_from('<I',raw,at)[0];struct.pack_into('<I',raw,at,w^(0x10<<5))
+elif mode=='icon-layout':
+ frame=image.names['ImageFilterGroup.processAll'][0][0]+8
+ at=offset(frame);word=struct.unpack_from('<I',raw,at)[0]
+ struct.pack_into('<I',raw,at,(word&~(4095<<10))|(0x168<<10))
 elif mode=='engine-layout':
  at=offset(0xc2fc28);w=struct.unpack_from('<I',raw,at)[0];struct.pack_into('<I',raw,at,(w&~(4095<<10))|(4<<10))
 elif mode=='ambiguous':

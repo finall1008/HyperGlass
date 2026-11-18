@@ -27,6 +27,29 @@ def shift_elf(data):
  return data
 # Change allocation tags and two independent compiler-selected layout values.
 catalog=catalogs()[0];image=catalog.model.image
+def file_offset(va):
+ return next(s['p_offset']+va-s['p_vaddr']for s in image.elf.iter_segments()if s['p_type']=='PT_LOAD'and s['p_vaddr']<=va<s['p_vaddr']+s['p_filesz'])
+
+def put_words(va,values):
+ struct.pack_into(f'<{len(values)}I',raw,file_offset(va),*values)
+
+# Enlarge a Dart frame while retaining the adapter's saved slots.
+frame=image.names['ImageFilterGroup.processAll'][0][0]+8
+word=struct.unpack('<I',image.read(frame,4))[0]
+put_words(frame,[(word&~(4095<<10))|((immediate(word)+8)<<10)])
+
+# Reassign the hint ARGB and temporaries together, as a compiler can do.
+store=0x10e3798;registers={0:3,3:1,5:4,6:5}
+operands=((0,5),(0,),(0,5),(0,),(0,5),(0,5),(0,),(0,5),(0,))
+changed=[]
+for word,shifts in zip(struct.unpack('<9I',image.read(store-12,36)),operands):
+ for bit in shifts:
+  old=(word>>bit)&31;word=(word&~(31<<bit))|(registers.get(old,old)<<bit)
+ changed.append(word)
+put_words(store-12,changed)
+
+# Use an existing channel-unpack sequence immediately after the span getter.
+put_words(0xc43c28,struct.unpack('<6I',image.read(0xc43cb8,24)))
 for rule in catalog.config:
  pc=catalog.model.anchors[rule.anchor].va
  if rule.kind==1:
@@ -34,14 +57,12 @@ for rule in catalog.config:
   tag=immediate(words[0])|(((words[1]>>5)&65535)<<(((words[1]>>21)&3)*16))
   tag+=(0x120 if rule.slot<5 or rule.slot==15 else 0x200 if rule.slot==5 else 0x300)<<12
   for i in range(2):words[i]=(words[i]&~(65535<<5))|(((tag>>(((words[i]>>21)&3)*16))&65535)<<5)
-  fileoff=next(s['p_offset']+target-s['p_vaddr']for s in image.elf.iter_segments()if s['p_type']=='PT_LOAD'and s['p_vaddr']<=target<s['p_vaddr']+s['p_filesz'])
-  struct.pack_into('<3I',raw,fileoff,*words)
+  put_words(target,words)
  elif rule.slot in [6,9]:
   value=0x153 if rule.slot==6 else -0x130
   word=struct.unpack('<I',image.read(pc,4))[0];encoded=(~value if word&0x60000000==0 else value)&65535
   word=(word&~(65535<<5))|(encoded<<5)
-  fileoff=next(s['p_offset']+pc-s['p_vaddr']for s in image.elf.iter_segments()if s['p_type']=='PT_LOAD'and s['p_vaddr']<=pc<s['p_vaddr']+s['p_filesz'])
-  struct.pack_into('<I',raw,fileoff,word)
+  put_words(pc,[word])
 outer=sections(raw);shstr=outer[struct.unpack_from('<H',raw,62)[0]][1];names=raw[shstr[4]:shstr[4]+shstr[5]]
 for at,s in outer:
  name=bytes(names[s[0]:]).split(b'\0',1)[0]
@@ -50,4 +71,4 @@ for at,s in outer:
   offset=(len(raw)+7)&-8;raw.extend(b'\0'*(offset-len(raw)));raw.extend(compressed)
   struct.pack_into('<QQ',raw,at+24,offset,len(compressed))
 shift_elf(raw);out.write_bytes(raw)
-print('Created layout fixture: code shifted 256 KiB; changed layer/boundary/widget CIDs, controller field and image frame slot',flush=True)
+print('Created layout fixture: moved code, changed Dart CIDs, frame size and slots, text registers and span layout',flush=True)

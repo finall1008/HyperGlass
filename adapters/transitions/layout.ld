@@ -9,6 +9,9 @@ SECTIONS {
  .limit_test 0x18113a0 : { *(.limit_test) }
  .bridge 0x19bfdb0 : { *(.bridge) }
  .badge 0x2000000 : { *(.badge) }
+ .widget_spans 0x2000040 : { *(.widget_spans) }
+ .widget_wrap 0x2000080 : { *(.widget_wrap) }
+ .widget_image_filter 0x2000100 : { *(.widget_image_filter) }
  /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) }
 }
 async_scene_return = 0x191a61c;
@@ -34,6 +37,12 @@ clone_pack_continue = 0xa1e60c;
 clone_unpack_continue = 0xa1e638;
 android_text_continue = 0x10e5e04;
 android_spanned_continue = 0xc42d88;
+span_direct_continue = 0xc43cbc;
+wrap_factory_filter_call = 0x111bda0;
+wrap_factory_resume = 0x111bda8;
+wrap_factory_child = 0x111bdbc;
+wrap_factory_set_state = 0xa95d38;
+wrap_grayscale_matrix = 0x17458e4;
 android_hint_continue = 0x10e379c;
 maml_text_continue = 0x164257c;
 maml_filter_continue = 0x163e20c;

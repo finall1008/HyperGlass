@@ -33,14 +33,14 @@ for va in [0x19bf004,0x1b147a4]:patch(va,bytes.fromhex('1f2003d5'),'Use the comp
 linked=ELFFile(open(H/'capture.elf','rb'))
 limits={'.capture_root':0xb33300-0xb32838,'.widget_helpers':0xb33600-0xb33300,'.capture_meta':0xce29cc-0xce2770,'.hooks':0x11f3180-0x11f30a0,'.capture_small':0x11f3358-0x11f3180,'.limit_test':0x1811460-0x18113a0,'.bridge':0x19bfef0-0x19bfdb0,'.text_color':0x98bea4-0x98bdc0}
 limits['.badge']=64
-if flags:limits['.capture_config']=124
+if flags:limits.update({'.capture_config':124,'.widget_spans':12,'.widget_wrap':96,'.widget_image_filter':20})
 for sec in linked.iter_sections():
  if sec['sh_type']in ['SHT_REL','SHT_RELA']:assert sec['sh_size']==0
  if sec['sh_flags']&2 and sec['sh_size']:assert sec.name in limits,sec.name
 for name,limit in limits.items():
  sec=linked.get_section_by_name(name);code=sec.data();assert len(code)<=limit,(name,len(code),limit)
  # The badge section is a private adapter mapping, never an original ELF site.
- if name!='.badge':
+ if name not in ('.badge','.widget_spans','.widget_wrap','.widget_image_filter'):
   for off in range(0,len(code),256):patch(sec['sh_addr']+off,code[off:off+256],'Allocation-free full-view capture and per-image crop metadata')
  print(name,len(code),'bytes')
 for va in [0xb32828,0xce275c,0x11f308c]:patch(va,bytes.fromhex('e00316aac0035fd6'),'Omit diagnostic string formatting to reserve relocation-free adapters')
@@ -51,11 +51,14 @@ for va,name in sites:patch(va,branch(va,symbols[name]),'Keep wallpaper sampling 
 patch(0x1b14734,branch(0x1b14734,symbols['source_controller_tag']),'Resolve recommendation icon controllers using the exact flight source identity')
 for va,name in [(0x10e5e00,'android_text_inline'),(0xc42d84,'android_spanned_text'),(0x10e3798,'android_hint_text'),(0x1642578,'maml_text_color'),(0x163e208,'maml_filter_color'),(0x173d854,'android_background'),(0x10d4bc0,'android_image_plate'),(0x10c58c8,'android_image_opacity')]:patch(va,branch(va,symbols[name]),'Common Android widget content: monochrome text and structural background painting with provider outlines intact')
 patch(0xc42e2c,struct.pack('<I',0x92800021)+branch(0xc42e30,0xc42d74),'Default uncolored SpannedString roots to monochrome white')
-for va,opcode in [(0xc43c28,0x32185c01),(0xc43cb4,0x32185c40)]:patch(va,struct.pack('<I',opcode),'Normalize SpannedString ForegroundColorSpan RGB to white while retaining span alpha')
-for va in [0xf18508,0x10c57cc,0x10c6a60,0x10c7180,0x12908f0,0x163e2a8,0x185ce78]:patch(va,branch(va,0x17458e4,True),'Apply grayscale color-matrix filtering to widget ImageViews, Drawables and MAML canvas paints')
+for va,opcode in [(0xc43c28,0x32005c01),(0xc43cb4,0x32005c40)]:patch(va,struct.pack('<I',opcode),'Normalize SpannedString ForegroundColorSpan RGB to white while retaining span alpha')
+if flags:patch(0xc43cb8,branch(0xc43cb8,symbols['span_direct']),'Normalize a directly unpacked ForegroundColorSpan')
+for va in [0xf18508,0x10c57cc,0x10c6a60,0x10c7180,0x12908f0,0x163e2a8,0x185ce78]:
+ reason='Apply grayscale color-matrix filtering to Android widget vectors' if va==0x12908f0 else 'Apply grayscale color-matrix filtering to widget ImageViews, Drawables and MAML canvas paints'
+ patch(va,branch(va,0x17458e4,True),reason)
 patch(0x185d4a0,branch(0x185d4a0,0x185d4e4),'Retain transparent interior on stroke-only GradientDrawables under grayscale matrix filter')
 patch(0x10e271c,branch(0x10e271c,0x17458e4,True)+struct.pack('<I',0xf81c83a0)+branch(0x10e2724,0x10e2898),'Apply grayscale color-matrix filtering to TextView compound drawables')
-for va in [0xfc6748,0xfc7638,0xfc84a8]:patch(va,bytes.fromhex('e00316aac0035fd6'),'Omit native Frame/Linear/Relative container background painting, retain provider geometry and foreground controls')
+for va in [0xfc5fd0,0xfc69cc,0xfc76c4]:patch(va,bytes.fromhex('e00316aa'),'Omit the Frame/Linear/Relative container paint call, retain provider geometry and foreground controls')
 patch(0x19bfda8,branch(0x19bfda8,0x19bff18),'Preserve captured rounded edges; native SF supplies the animated clip')
 for va in [0x148083c,0x1480844]:patch(va,bytes.fromhex('1f2003d5'),'Enter the existing native glass host for Android widgets')
 patch(0x1480914,bytes.fromhex('1f2003d5'),'Use the folder glass presets at static fields 0x2090/0x2088 for Android hosts')

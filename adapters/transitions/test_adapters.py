@@ -236,9 +236,9 @@ for site,start,end,context_reg in [(0x1480a00,0x1480a20,0x1480a30,2),(0x1480b78,
   assert qi(u,0x2f9f88)==struct.unpack('<Q',struct.pack('<d',radius))[0]
   assert u.reg_read(R.UC_ARM64_REG_D0)==struct.unpack('<Q',struct.pack('<d',radius))[0]
   assert u.reg_read(R.UC_ARM64_REG_SP)==0x2ee000
-for site in [0xfc6748,0xfc7638,0xfc84a8]:
+for site in [0xfc5fd0,0xfc69cc,0xfc76c4]:
  u,put=setup();u.reg_write(regs[30],0x400000);saved=[u.reg_read(r)for r in regs]
- u.emu_start(site,0x400000,count=10)
+ u.emu_start(site,site+4,count=10)
  assert u.reg_read(regs[0])==nil
  assert all(u.reg_read(r)==saved[i]for i,r in enumerate(regs)if i!=0)
  assert u.reg_read(R.UC_ARM64_REG_SP)==0x2ee000

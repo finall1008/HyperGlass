@@ -127,7 +127,7 @@ extern "C" unsigned hg_runtime_tick(const char*phase){
  for(size_t i=0;i<images.size();i++){
   const auto&r=images[i].result;unsigned enabled=r.ready;
   if(!snapshots)enabled&=~2u;
-  if(i==0&&(enabled&16)&&!widget_monochrome())enabled&=~16u;
+  if(i==0&&(enabled&HG_WIDGET_MONOCHROME)&&!widget_monochrome())enabled&=~unsigned(HG_WIDGET_MONOCHROME);
   if(i==0&&(enabled&32)){
    int monochrome=badge_monochrome();
    if(monochrome!=1)enabled&=~32u;
