@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import lzma,struct,sys
 from catalog import catalogs,branch_target
-from model import immediate
+from model import immediate,words
 source=Path(sys.argv[1]);out=Path(sys.argv[2]);shift=0x40000
 raw=bytearray(source.read_bytes())
 def sections(data):
@@ -38,6 +38,32 @@ frame=image.names['ImageFilterGroup.processAll'][0][0]+8
 word=struct.unpack('<I',image.read(frame,4))[0]
 put_words(frame,[(word&~(4095<<10))|((immediate(word)+8)<<10)])
 
+# Give the scene export new frame slots for its incoming layer, rectangle,
+# rounding flag and view ID, as well as its await result spills.
+scene,size,_=image.names['OffsetLayer.toImage'][0]
+extra=0x18
+frame=immediate(words(image.read(scene+8,4))[0])
+for pc in range(scene,scene+size,4):
+ word=words(image.read(pc,4))[0]
+ if word&0xffc003ff in (0xd10001ef,0xd10003af) and immediate(word)==frame:
+  put_words(pc,[(word&~(4095<<10))|((frame+extra)<<10)])
+ elif word&0x3b200fe0==0x380003a0 and immediate(word)<-8:
+  slot=immediate(word)-extra
+  assert slot>=-256
+  put_words(pc,[(word&~(511<<12))|((slot&511)<<12)])
+
+# Rename the independent temporaries in the class and one-cell guards.
+for start,register,operands in [
+ (0xd0fdcc,2,((0,),(0,5),(5,),(),(),(0,),(0,5),(0,))),
+ (0xd0fe60,3,((0,),(5,),(),(0,),(5,),(),(0,),(5,)))
+]:
+ for i,fields in enumerate(operands):
+  pc=start+i*4;word=words(image.read(pc,4))[0]
+  for bit in fields:
+   assert (word>>bit)&31==0
+   word|=register<<bit
+  put_words(pc,[word])
+
 # Reassign the hint ARGB and temporaries together, as a compiler can do.
 store=0x10e3798;registers={0:3,3:1,5:4,6:5}
 operands=((0,5),(0,),(0,5),(0,),(0,5),(0,5),(0,),(0,5),(0,))
@@ -71,4 +97,4 @@ for at,s in outer:
   offset=(len(raw)+7)&-8;raw.extend(b'\0'*(offset-len(raw)));raw.extend(compressed)
   struct.pack_into('<QQ',raw,at+24,offset,len(compressed))
 shift_elf(raw);out.write_bytes(raw)
-print('Created layout fixture: moved code, changed Dart CIDs, frame size and slots, text registers and span layout',flush=True)
+print('Created layout fixture: moved code, changed Dart CIDs, scene and filter frames, shortcut/text registers and span layout',flush=True)

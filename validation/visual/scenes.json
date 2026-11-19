@@ -1,0 +1,153 @@
+{
+  "display_size": [1120, 2436],
+  "animation_scales": [1, 10, 10],
+  "next_page": [946, 1998, 178, 1998, 345],
+  "home_gesture": [560, 2431, 560, 1050, 185],
+  "scenes": {
+    "icon": {
+      "page": 1,
+      "warmup": true,
+      "package": "com.android.settings",
+      "tap": [954, 1740],
+      "rest": {
+        "box": [426, 815, 536, 920],
+        "limits": {"max_mean": 3, "max_changed_pct": 5}
+      },
+      "open": {
+        "phase": 0.03,
+        "box": [399, 674, 553, 950],
+        "limits": {"max_mean": 10, "max_changed_pct": 25}
+      },
+      "return": {
+        "phase": 0.012,
+        "box": [405, 730, 553, 929],
+        "foreground": {"box": [426, 754, 510, 840], "min_rgb": 115, "coverage": [0.23, 0.72]},
+        "limits": {"max_mean": 10, "max_changed_pct": 25}
+      }
+    },
+    "folder": {
+      "page": 1,
+      "before_enter": {
+        "closed": {
+          "box": [288, 391, 537, 656],
+          "ignore": [[32, 32, 108, 117], [182, 130, 218, 169]],
+          "limits": {"max_mean": 4, "max_changed_pct": 8}
+        }
+      },
+      "enter": [["tap", 823, 1022]],
+      "package": "com.android.deskclock",
+      "tap": [560, 898],
+      "rest": {
+        "box": [220, 393, 340, 524],
+        "ignore": [[35, 34, 83, 76]],
+        "limits": {"max_mean": 5, "max_changed_pct": 10}
+      },
+      "open": {
+        "phase": 0.035,
+        "box": [174, 315, 399, 584],
+        "limits": {"max_mean": 12, "max_changed_pct": 32}
+      },
+      "return": {
+        "phase": 0.01,
+        "box": [190, 341, 379, 558],
+        "home_difference": [0.16, 0.24],
+        "foreground": {"box": [243, 377, 324, 475], "min_rgb": 115, "coverage": [0.04, 0.85]},
+        "limits": {"max_mean": 12, "max_changed_pct": 32}
+      }
+    },
+    "drawer": {
+      "page": 1,
+      "enter": [["swipe", 560, 2282, 560, 850, 285]],
+      "package": "com.miui.calculator",
+      "tap": [692, 1506],
+      "rest": {
+        "box": [291, 700, 402, 826],
+        "limits": {"max_mean": 3, "max_changed_pct": 5}
+      },
+      "open": {
+        "phase": 0.035,
+        "box": [252, 559, 473, 869],
+        "tap_hold_step_ms": 12,
+        "limits": {"max_mean": 12, "max_changed_pct": 32}
+      },
+      "return": {
+        "phase": 0.012,
+        "box": [282, 650, 399, 796],
+        "home_difference": [0.30, 0.46],
+        "foreground": {"box": [291, 648, 379, 751], "min_rgb": 140, "coverage": [0.035, 0.90]},
+        "limits": {"max_mean": 12, "max_changed_pct": 32}
+      }
+    },
+    "android-widget": {
+      "page": 2,
+      "provider": "com.mihoyo.combo.widget.hkrpg.StarRailRecordWidgetProvider",
+      "box": [29, 390, 532, 655],
+      "limits": {"max_mean": 5, "max_changed_pct": 8}
+    },
+    "maml-weather": {
+      "page": 4,
+      "warmup": true,
+      "package": "com.miui.weather2",
+      "tap": [820, 1032],
+      "rest": {
+        "box": [286, 389, 538, 640],
+        "ignore": [[28, 34, 142, 220]],
+        "limits": {"max_mean": 3, "max_changed_pct": 5}
+      },
+      "details": {
+        "monochrome": {
+          "box": [473, 421, 506, 456],
+          "limits": {"max_mean": 6, "max_changed_pct": 15}
+        }
+      },
+      "open": {
+        "phase": 0.145,
+        "box": [392, 286, 552, 684],
+        "limits": {"max_mean": 14, "max_changed_pct": 35}
+      },
+      "return": {
+        "phase": 0.012,
+        "box": [392, 381, 540, 651],
+        "home_difference": [0.14, 0.24],
+        "foreground": {"box": [441, 407, 503, 482], "min_rgb": 75, "coverage": [0.01, 0.30]},
+        "limits": {"max_mean": 10, "max_changed_pct": 25}
+      }
+    },
+    "maml-weather-stack-blur": {
+      "page": 1,
+      "warmup": true,
+      "package": "com.miui.weather2",
+      "tap": [293, 1030],
+      "wallpaper": "blur-wallpaper.png",
+      "open": {
+        "metric": "stripe_harmonic_ratio",
+        "box": [110, 485, 228, 550],
+        "period": 80,
+        "phase_range": [0.015, 0.095],
+        "max_median_chroma": 30,
+        "limits": {"min_frames": 1, "min_settled_fundamental": 5, "min_settled_harmonic": 4, "max_relative_delta": 0.4}
+      },
+      "return": {
+        "metric": "stripe_harmonic_ratio",
+        "box": [110, 485, 228, 550],
+        "period": 80,
+        "phase_range": [0.07, 0.17],
+        "max_median_chroma": 30,
+        "limits": {"min_frames": 4, "min_settled_fundamental": 5, "min_settled_harmonic": 4, "max_relative_delta": 0.22}
+      }
+    },
+    "large-folder-clock": {
+      "page": 5,
+      "package": "com.android.deskclock",
+      "tap": [194, 927],
+      "return": {
+        "metric": "icon_luma_polarity",
+        "box": [65, 431, 129, 495],
+        "radius": 25,
+        "home_difference": [0.025, 0.105],
+        "max_app_phase": 0.018,
+        "limits": {"min_frames": 4, "max_luma_delta": 24, "min_polarity": 24}
+      }
+    }
+  }
+}

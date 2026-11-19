@@ -5,7 +5,7 @@ H=Path(__file__).resolve().parent;ROOT=H.parent;REFS=Path(os.environ.get('HYPERG
 sys.path.insert(0,str(ROOT))
 from tools.build_env import TOOLCHAIN as T
 if len(sys.argv)!=2:raise SystemExit('Usage: .venv/bin/python module/test_native.py ADB_SERIAL')
-ADB=['adb','-s',sys.argv[1]];REMOTE='/data/local/tmp/hyperglass-adaptive-tests';OUT=B/'native-tests';OUT.mkdir(exist_ok=True)
+ADB=['timeout','45','adb','-s',sys.argv[1]];REMOTE='/data/local/tmp/hyperglass-adaptive-tests';OUT=B/'native-tests';OUT.mkdir(exist_ok=True)
 def run(*args,**kw):return subprocess.run(list(map(str,args)),check=True,**kw)
 def compile_test(name,cpp,objects=()):
  compiler=T/('aarch64-linux-android35-clang++'if cpp else'aarch64-linux-android35-clang')
@@ -16,7 +16,7 @@ bins=[compile_test('test_runtime',False,[B/'assets.o']),compile_test('test_runti
 old=REFS/'launcher-801027722/libapp.so';new=REFS/'launcher-801029226/MiuiHome.apk'
 fixtures={}
 full=247
-disabled_groups={'core-layout':2,'widget-layout':4|16|64|128,'ambiguous':2,'badge-layout':32,'icon-layout':1}
+disabled_groups={'core-layout':2,'scene-view-layout':2,'maml-repaint-layout':2,'widget-layout':4|16|64|128,'ambiguous':2,'badge-layout':32,'icon-layout':1}
 run(sys.executable,H/'adaptive/make_future_fixture.py',old,OUT/'future.so');fixtures['future']=OUT/'future.so'
 for mode in disabled_groups:
  run(sys.executable,H/'adaptive/make_failure_fixture.py',old,mode,OUT/(mode+'.so'));fixtures[mode]=OUT/(mode+'.so')

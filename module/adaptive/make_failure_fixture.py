@@ -3,11 +3,26 @@ import os
 from pathlib import Path
 import lzma,struct,sys
 from inspect_pair import Image
-from model import branch_target
+from model import branch_target,immediate
 image=Image(sys.argv[1]);raw=bytearray(Path(sys.argv[1]).read_bytes());mode=sys.argv[2]
 def offset(va):return next(s['p_offset']+va-s['p_vaddr']for s in image.elf.iter_segments()if s['p_type']=='PT_LOAD'and s['p_vaddr']<=va<s['p_vaddr']+s['p_filesz'])
 if mode=='core-layout':
  at=offset(0xa03338);w=struct.unpack_from('<I',raw,at)[0];struct.pack_into('<I',raw,at,(w&~(511<<12))|(0x4b<<12))
+elif mode=='scene-view-layout':
+ # Only the ceil arm loses the view-ID input. Patching one arm would
+ # let the Dart and native snapshot stages disagree.
+ pc=0x191a8a0
+ at=offset(pc);word=struct.unpack_from('<I',raw,at)[0]
+ bounds=immediate(struct.unpack('<I',image.read(0x191a610,4))[0])
+ assert word&0xffe00fff==0xf84003a6
+ struct.pack_into('<I',raw,at,(word&~(511<<12))|((bounds&511)<<12))
+elif mode=='maml-repaint-layout':
+ # A changed compact-map cursor must stop the SF adapter before it reads
+ # the repaint registry under the old Dart ABI.
+ pc=image.names['_HashVMBase._usedData'][0][0]+4
+ word=struct.unpack('<I',image.read(pc,4))[0]
+ assert word==0xb8413020
+ struct.pack_into('<I',raw,offset(pc),word+(4<<12))
 elif mode=='badge-layout':
  at=offset(0x1749cfc);w=struct.unpack_from('<I',raw,at)[0];struct.pack_into('<I',raw,at,(w&~(511<<12))|(0x2f<<12))
 elif mode=='widget-layout':

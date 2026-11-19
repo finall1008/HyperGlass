@@ -5,7 +5,7 @@ from dataclasses import dataclass,field
 import json,struct
 from elftools.elf.elffile import ELFFile
 from capstone import Cs,CS_ARCH_ARM64,CS_MODE_ARM
-from model import Model,Image,branch_target,immediate,words,arm_mask
+from model import Model,Image,branch_target,immediate,words,arm_mask,SCENE_FLOOR,SCENE_CEIL
 H=Path(__file__).resolve().parent;ROOT=H.parents[1];EX=ROOT/'adapters';REFS=Path(os.environ.get('HYPERGLASS_REFERENCE_DIR',ROOT/'fixtures/reference'))
 @dataclass
 class Target:
@@ -135,7 +135,7 @@ class Catalog:
   # Replay current compiler frame slots and canonical empty-widget pool loads.
   if self.model.image.path.name!='libapp.so':return
   linked=ELFFile(open(EX/'transitions/capture.elf','rb'));syms={s.name:s['st_value']for s in linked.get_section_by_name('.symtab').iter_symbols()}
-  for symbol,reference,opcode in [('android_text_inline',0x10e5e00,0xf81d03a4),('android_spanned_text',0xc42d84,0),('android_hint_text',0x10e3798,0),('bytes_gateway',0x1b15198,0x92802cf1),('android_empty_widget',0x113976c,0),('android_empty_widget',0x1139770,0),('source_tag_hero',0x1b13fa4,0),('source_tag_prefix',0x9ebd4c,0),('source_tag_prefix',0x9ebd50,0)]:
+  for symbol,reference in [('android_text_inline',0x10e5e00),('android_spanned_text',0xc42d84),('android_hint_text',0x10e3798),('bytes_gateway',0x1b15198),('android_empty_widget',0x113976c),('android_empty_widget',0x1139770),('source_tag_hero',0x1b13fa4),('source_tag_prefix',0x9ebd4c),('source_tag_prefix',0x9ebd50),('mark_floor_store',0x191a74c),('mark_ceil_store',0x191a8b8)]:
    pc=syms[symbol];unit=self.unit_at(pc);assert unit
    old=struct.unpack('<I',self.model.image.read(reference,4))[0]
    positions=[]
@@ -226,12 +226,36 @@ def widget_anchors(model):
  model.after_call(0xc43cb8,call,4,(0,6))
  model.after_call(0xc43cbc,call,8,(1,5))
 
+def snapshot_anchors(model):
+ # The early class guard and the legacy bitmap flag both reject to the
+ # geometry checks. Only register roles and the local branch shape matter.
+ model.operand_sequence(0xd0fddc,0xd0fdcc,
+  (0xfffffc00,0xfffffc00,0xff800000,0xffc0001f,0xffffffff,
+   0xffe00c00,0xfffffc00,0xffffffe0,*([0xffffffff]*4),0xfffffc00),
+  ((0,0,1,5),(1,0,2,5),(2,0,3,5),(0,5,5,5),(5,0,6,5),(6,0,7,0),(0,5,12,5)))
+ # Find the one-cell decision and the positive exit from the final
+ # dispatcher separately. Other geometry checks can appear between them.
+ model.operand_sequence(0xd0fe80,0xd0fe60,
+  (0xffffffe0,0xfffffc1f,0xffffffff,0xfffffc00,0xfffffc1f,
+   0xffffffff,0xfffffc00,0xfffffc1f,*([0xffffffff]*5)),
+  ((0,0,1,5),(3,0,4,5),(3,5,6,5),(6,0,7,5)))
+ model.operand_sequence(0xd0febc,0xd0fe94,
+  (0xfffffc00,0xfffffc00,0xff80001f,*([0xffffffff]*11)),
+  ((0,0,1,5),(1,0,2,5)))
+ for pc in (0x199c894,0x19c08e4,0x1b15874):
+  model.named_call(pc,'RenderRepaintBoundary.toImage',delta=4)
+ model.named_call(0x191a61c,'OffsetLayer._createSceneForImage',delta=4)
+ for pc,mode in ((0x191a74c,SCENE_FLOOR),(0x191a8b8,SCENE_CEIL)):
+  model.scene_mark(pc,mode,0)
+  model.scene_mark(pc+4,mode,4)
+
 def catalogs():
  a=Catalog(REFS/'launcher-801027722/libapp.so')
  widget_anchors(a.model)
+ snapshot_anchors(a.model)
  a.add_elf(EX/'icons/processor.elf',['.text.helper','.text'],1)
  a.add_elf(EX/'transitions/boundary.elf',['.message','.selector','.initialize'],2,physical=(0x1722030,))
- a.add_elf(EX/'transitions/capture.elf',['.capture_root','.hooks','.capture_small','.limit_test'],2)
+ a.add_elf(EX/'transitions/capture.elf',['.capture_root','.hooks','.capture_small','.limit_test','.maml_repaint'],2)
  a.add_elf(EX/'transitions/capture.elf',['.text_color','.widget_helpers'],4)
  a.add_elf(EX/'transitions/capture.elf',['.widget_spans'],4)
  a.add_elf(EX/'transitions/capture.elf',['.badge'],32)
@@ -249,7 +273,7 @@ def catalogs():
  # rearrange the instructions that consume the result.
  for pc in [0x10c69f0,0x10c5778,0x10cfff0,0x10d367c]:
   a.model.named_call(pc,'_ImageViewState._applyImageAlphaIfNeeded',delta=4)
- for name,group in [('ImageFilterGroup.processAll',1),('IconRenderer.renderThemed',1),('OffsetLayer.toImage',2),('OffsetLayer._createSceneForImage',2),('IconCaptureUtil._imageToResult',2),('ShortcutIconWidget._addMessage',2),('AppInfoModel.getcomponentNameString',2)]:
+ for name,group in [('ImageFilterGroup.processAll',1),('IconRenderer.renderThemed',1),('OffsetLayer._createSceneForImage',2),('IconCaptureUtil._imageToResult',2),('ShortcutIconWidget._addMessage',2),('AppInfoModel.getcomponentNameString',2)]:
   function=a.model.image.names[name][0];pc=function[0]+8
   grows=name=='ImageFilterGroup.processAll'
   anchor=a.model.add(pc,frames=not grows)
@@ -262,7 +286,7 @@ def catalogs():
  a.constraints.append((2,a.model.add(0x1722088),a.model.add(0x1722030),0x58))
  # Core Dart object offsets used by allocation-free adapters must retain their
  # ABI. Resolve their accessor instructions semantically, then check offsets.
- for pc in [0x15edb70,0x15edba0,0x11f8168,0x11f81ac,0xa030a4,0xa03338,0xa03350,0xfa9b7c,0xfa9cb0,0xfb4d50,0x1562774,0x191a5f4,0x191a5f8]:
+ for pc in [0x15edb70,0x15edba0,0x11f8168,0x11f81ac,0xa030a4,0xa03338,0xa03350,0xfa9b7c,0xfa9cb0,0xfb4d50,0x1562774,0x1562174]:
   value=immediate(struct.unpack('<I',a.model.image.read(pc,4))[0])
   a.constraints.append((2,a.model.add(pc,frames=False),-1,value))
  # The wrap adapter uses the proven two-call ColorFiltered allocation route.

@@ -1,3 +1,5 @@
+#include "capture_layout.h"
+
 .section .limit_test,"ax"
 .global limit_test
 limit_test:
@@ -27,12 +29,24 @@ found:
  b.ne no
  ldr x5,[x5]
  // Only full_scene's marked SF export may alter ancestor rendering.
+#ifdef HG_ADAPTIVE
+ adrp x9,hg_capture_config
+ ldrsw x4,[x9,:lo12:hg_capture_config+4*HG_CAPTURE_BOUNDS_SLOT]
+ ldr x4,[x5,x4]
+#else
  ldur x4,[x5,#-0x88]
+#endif
  ldur x4,[x4,#7]
  mov x9,#0x4130000000000000 // META_BASE as a positive double.
  cmp x4,x9
  b.lo no
+#ifdef HG_ADAPTIVE
+ adrp x9,hg_capture_config
+ ldrsw x6,[x9,:lo12:hg_capture_config+4*HG_CAPTURE_LAYER_SLOT]
+ ldr x6,[x5,x6]
+#else
  ldur x6,[x5,#-0x80]
+#endif
  lsl x7,x28,#32
  mov x8,#80
 layer_loop:
@@ -83,7 +97,7 @@ capture_image_filter:
  bl limit_test
  mov x30,x12
  cbz x16,image_replay
- b draw_children
+ b image_filter_origin
 image_replay:
  stp x29,x30,[x15,#-16]!
  b image_filter_continue
@@ -96,11 +110,15 @@ root_gateway:
 mark_floor:
  mov x16,#1
  bl capture_bridge
+.global mark_floor_store
+mark_floor_store:
  stur x0,[x29,#-0x90]
  b mark_floor_continue
 mark_ceil:
  mov x16,#1
  bl capture_bridge
+.global mark_ceil_store
+mark_ceil_store:
  stur x0,[x29,#-0x88]
  b mark_ceil_continue
 result_gateway:
@@ -387,6 +405,19 @@ opacity_replay:
  b opacity_continue
 
 .section .capture_root,"ax"
+image_filter_origin:
+ // Bypassing a translated ImageFilterLayer would drop its offset while the
+ // exported crop still includes it. Keep the original push in that case.
+ ldur w17,[x1,#0x4f]
+ add x17,x17,x28,lsl #32
+ ldur x16,[x17,#7]
+ ldur x17,[x17,#15]
+ orr x16,x16,x17
+ lsl x16,x16,#1
+ cbz x16,image_filter_draw
+ b image_replay
+image_filter_draw:
+ b draw_children
 .global capture_transform
 capture_transform:
  mov x12,x30
@@ -402,6 +433,22 @@ capture_transform:
 transform_replay:
  stp x29,x30,[x15,#-16]!
  b transform_continue
+
+#ifdef HG_ADAPTIVE
+.section .maml_repaint,"ax"
+// Replay the key decompression and select an attached boundary before the
+// original GlobalKey lookup. Dart calls retain their original return PCs.
+ mov x17,x0
+ b maml_repaint
+ mov x17,x2
+maml_repaint:
+ add x1,x1,x28,lsl #32
+ str x30,[x15,#-16]!
+ mov x16,#9
+ bl capture_bridge
+ ldr x30,[x15],#16
+ ret
+#endif
 
 .section .badge,"ax"
 .global badge_text,badge_background,badge_white_pool,badge_text_replay

@@ -1,4 +1,5 @@
 #include "resolver.hpp"
+#include "../../adapters/transitions/capture_layout.h"
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -81,6 +82,9 @@ uint32_t Locator::resolve(size_t index){
     if(result>=owner.value&&result+4<=end&&image_.executable(result,4))exact.push_back(uint32_t(result));
    }
   }
+ }else if(a.mode==Anchor::SceneFloor||a.mode==Anchor::SceneCeil){
+  uint64_t mark=scene_marks_[a.mode-Anchor::SceneFloor];
+  if(mark)exact.push_back(uint32_t(mark+a.delta));
  }else if(a.mode==Anchor::BranchDestination||a.mode==Anchor::RelativeSequence){
   uint32_t source=resolve(size_t(a.dependency));if(!source)return 0;
   uint64_t pc=uint64_t(source)+a.delta,dest=a.mode==Anchor::BranchDestination?branch_target(image_.word(pc),pc):pc;
@@ -195,21 +199,160 @@ static bool add_widget_branch(const ElfImage&image,uintptr_t live,uint64_t pc,ui
  Patch patch{};patch.address=live+pc;patch.size=4;patch.group=uint8_t(group);
  memcpy(patch.original,image.at(pc,4),4);memcpy(patch.bytes,&word,4);patches.push_back(patch);return true;
 }
+static std::vector<uint64_t> direct_calls(const ElfImage&image,const Symbol&owner,uint64_t callee){
+ std::vector<uint64_t> calls;
+ for(uint64_t pc=owner.value;pc+4<=owner.value+owner.size;pc+=4){
+  uint32_t word=image.word(pc);
+  if((word&0xfc000000)==0x94000000&&branch_target(word,pc)==callee)calls.push_back(pc);
+ }
+ return calls;
+}
 static bool named_widget_call(const ElfImage&image,const Symbol&owner,const char*name,uint32_t preceding=0){
  auto callees=image.named(name);
  if(callees.size()!=1)return false;
- unsigned calls=0;
- for(uint64_t pc=owner.value;pc+4<=owner.value+owner.size;pc+=4){
-  uint32_t word=image.word(pc);
-  if((word&0xfc000000)==0x94000000&&branch_target(word,pc)==callees.front().value){
-   if(preceding&&(pc<owner.value+8||image.word(pc-8)!=preceding))return false;
-   calls++;
-  }
- }
- return calls==1;
+ auto calls=direct_calls(image,owner,callees.front().value);
+ return calls.size()==1&&(!preceding||(calls.front()>=owner.value+8&&image.word(calls.front()-8)==preceding));
 }
-static bool dart_widget_frame(const ElfImage&image,const Symbol&owner){
+static bool dart_frame(const ElfImage&image,const Symbol&owner){
  return owner.size>=16&&image.executable(owner.value,owner.size)&&image.word(owner.value)==0xa9bf79fd&&image.word(owner.value+4)==0xaa0f03fd;
+}
+
+struct SceneFrame {
+ std::array<uint64_t,2> marks{};
+ int32_t layer=0,bounds=0,round=0,view=0;
+};
+static constexpr uint32_t fp_load=0xf84003a0,fp_store=0xf80003a0,fp_load_double=0xfc4003a0;
+static int32_t frame_slot(uint32_t word,uint32_t opcode,int64_t size){
+ if((word&0xffe00fe0)!=opcode)return 0;
+ int64_t slot=instruction_immediate(word);
+ return slot<0&&slot>=-size&&slot%8==0?int32_t(slot):0;
+}
+
+// Trace the return value of _resolveViewId through the boundary's tail call.
+// Between the producer and the argument move, the compiler reloads other
+// arguments from FP. A write to x0 or another call invalidates that proof.
+static unsigned boundary_view_argument(const ElfImage&image,const Symbol&boundary,uint64_t producer,uint64_t consumer){
+ if(consumer<=producer+4||!dart_frame(image,boundary))return 0;
+ uint32_t move=image.word(consumer-4);
+ unsigned reg=move&31;
+ if((move&0xffffffe0)!=0xaa0003e0||reg<4||reg>7)return 0;
+ for(uint64_t pc=producer+4;pc<consumer-4;pc+=4){
+  uint32_t word=image.word(pc);
+  if((word&0xffe00fe0)==fp_load_double)continue;
+  if((word&0xffe00fe0)!=fp_load||(word&31)==0)return 0;
+ }
+ return reg;
+}
+
+static int32_t scene_view_slot(const ElfImage&image,uint64_t start,uint64_t end,int64_t frame,unsigned view_arg,const SceneFrame&scene){
+ std::array<unsigned,32> origins{};
+ for(unsigned i=0;i<origins.size();i++)origins[i]=i;
+ int32_t view=0;
+ bool layer_saved=false,bounds_saved=false,round_saved=false;
+ for(uint64_t pc=start;pc<end;pc+=4){
+  uint32_t word=image.word(pc);
+  unsigned dest=word&31;
+  if((word&0xfc000000)==0x94000000)break;
+  if((word&0xffe0ffe0)==0xaa0003e0){origins[dest]=origins[(word>>16)&31];continue;}
+  if(int32_t slot=frame_slot(word,fp_store,frame)){
+   unsigned origin=origins[dest];
+   if(slot==scene.layer)layer_saved=origin==1;
+   if(slot==scene.bounds)bounds_saved=origin==2;
+   if(slot==scene.round)round_saved=origin>=3&&origin<=7&&origin!=view_arg;
+   if(origin==view_arg){
+    if(view&&view!=slot)return 0;
+    view=slot;
+   }else if(view==slot)view=0;
+   continue;
+  }
+  if(frame_slot(word,0xfc0003a0,frame)||(word==0xd503201f))continue; // stur dReg or nop
+  if((word&0xff8003ff)==0x91000360||(word&0xffc003ff)==0xf9400000){origins[0]=31;continue;}
+  return 0;
+ }
+ return layer_saved&&bounds_saved&&round_saved&&view!=scene.layer&&view!=scene.bounds&&view!=scene.round?view:0;
+}
+
+// Confirm that each native call receives the view ID from the same Dart
+// slot. The caller may marshal additional register arguments before the BL.
+static unsigned native_view_argument(const ElfImage&image,uint64_t start,uint64_t call,int64_t frame,int32_t view){
+ unsigned argument=0,written=0;
+ for(uint64_t pc=call;pc>start;){
+  pc-=4;
+  uint32_t word=image.word(pc);
+  unsigned reg=word&31;
+  int32_t slot=frame_slot(word,fp_load,frame);
+  if(!slot&&(word&0xffffffe0)!=0x9100c2c0&&(word&0xffe0ffff)!=0xaa0003e1&&word!=0xd503201f)break;
+  if(slot==view&&!(written&(1u<<reg))){
+   if(argument||reg<4||reg>7)return 0;
+   argument=reg;
+  }
+  if(word!=0xd503201f)written|=1u<<reg;
+ }
+ return argument;
+}
+
+static const char* locate_scene_frame(const ElfImage&image,SceneFrame&scene){
+ auto owners=image.named("OffsetLayer.toImage"),builders=image.named("OffsetLayer._createSceneForImage");
+ auto boundaries=image.named("RenderRepaintBoundary.toImage"),views=image.named("RenderRepaintBoundary._resolveViewId");
+ auto rasters=image.named("_NativeScene.toImage");
+ if(owners.size()!=1||builders.size()!=1||boundaries.size()!=1||views.size()!=1||rasters.size()!=1)
+  return "scene call graph is missing or ambiguous";
+ const auto&owner=owners.front();
+ uint32_t reserve=image.word(owner.value+8);
+ if(!dart_frame(image,owner)||(reserve&0xff8003ff)!=0xd10001ef)return "scene frame prologue changed";
+ int64_t frame=instruction_immediate(reserve);
+ auto create=direct_calls(image,owner,builders.front().value),raster=direct_calls(image,owner,rasters.front().value);
+ auto produce_view=direct_calls(image,boundaries.front(),views.front().value);
+ auto to_image=direct_calls(image,boundaries.front(),owner.value);
+ if(create.size()!=1||raster.size()!=2||produce_view.size()!=1||to_image.size()!=1)
+  return "scene call edges are missing or ambiguous";
+ uint64_t call=create.front(),end=owner.value+owner.size;
+ if(call<owner.value+24||call+20>=end)return "scene creation arguments moved out of the frame";
+ uint32_t layer=image.word(call-12),bounds=image.word(call-8),ratio=image.word(call-4);
+ scene.layer=frame_slot(layer,fp_load,frame);scene.bounds=frame_slot(bounds,fp_load,frame);
+ uint32_t save_scene=image.word(call+8),round=image.word(call+12),branch=image.word(call+16);
+ scene.round=frame_slot(round,fp_load,frame);
+ if(!scene.layer||!scene.bounds||!scene.round||scene.layer==scene.bounds||
+    scene.round==scene.layer||scene.round==scene.bounds||(layer&31)!=1||(bounds&31)!=2||
+    !frame_slot(ratio,fp_load_double,frame)||(ratio&31)!=0||
+    (image.word(call+4)&0xffffffe0)!=0xaa0003e0||
+    (image.word(call+4)&31)!=(save_scene&31)||frame_slot(save_scene,fp_store,frame)!=scene.layer||
+    (branch&0xfff80000)!=0x37200000||(branch&31)!=(round&31))
+  return "scene layer, bounds or rounding slot is unproven";
+ uint64_t ceil=branch_target(branch,call+16);
+ if(raster[0]<=call+20||raster[0]+20>=ceil||ceil>=raster[1]||raster[1]+24>end)
+  return "floor and ceil call paths are unproven";
+ unsigned view_arg=boundary_view_argument(image,boundaries.front(),produce_view.front(),to_image.front());
+ if(!view_arg)return "boundary view ID argument is unproven";
+ scene.view=scene_view_slot(image,owner.value+12,call,frame,view_arg,scene);
+ if(!scene.view)return "view ID spill is missing or ambiguous";
+
+ uint64_t await=0;
+ unsigned native_arg=0;
+ for(unsigned i=0;i<2;i++){
+  uint64_t pc=raster[i],begin=i?ceil:call+20;
+  unsigned rounds=0;
+  for(uint64_t at=begin;at<pc+16;at+=4){
+   uint32_t word=image.word(at);
+   rounds+=(word&0xfffffc00)==(i?0x9e680000u:0x9e700000u); // FCVTPS / FCVTMS
+   int32_t slot=frame_slot(word,fp_store,frame);
+   if(slot==scene.bounds||slot==scene.view)return "scene bounds or view ID overwritten before writeback";
+  }
+  unsigned arg=native_view_argument(image,begin,pc,frame,scene.view);
+  if(rounds!=2||!arg||(i&&arg!=native_arg))return "native scene view ID or rounding path changed";
+  native_arg=arg;
+  uint32_t wait=image.word(pc+12),store=image.word(pc+16),resume=image.word(pc+20);
+  uint64_t destination=branch_target(wait,pc+12);
+  int32_t slot=frame_slot(store,fp_store,frame);
+  if(image.word(pc+4)!=0xaa0003e1||(image.word(pc+8)&31)!=1||!frame_slot(image.word(pc+8),fp_store,frame)||
+     (wait&0xfc000000)!=0x94000000||!image.executable(destination,4)||(i&&destination!=await)||
+     !slot||(store&31)!=0||slot==scene.layer||slot==scene.view||
+     frame_slot(resume,fp_load,frame)!=scene.layer||(resume&31)!=2)
+   return "scene image writeback is unproven";
+  await=destination;
+  scene.marks[i]=pc+16;
+ }
+ return nullptr;
 }
 // Replace the renderer's own ColorFilter construction. Wrapping its final
 // widget would apply the matrix twice when an ImageView or TextView already
@@ -230,7 +373,7 @@ static bool plan_vector_filters(const ElfImage&image,uintptr_t live,uintptr_t fi
  std::vector<Patch>patches;
  for(const char*name:{"_VectorDrawableBoxState._buildLiveCached","_VectorDrawableBoxState._renderScene"}){
   auto owners=image.named(name);
-  if(owners.size()!=1||!dart_widget_frame(image,owners.front())||!named_widget_call(image,owners.front(),"_VectorDrawableBoxState._resolveTintColor"))return false;
+  if(owners.size()!=1||!dart_frame(image,owners.front())||!named_widget_call(image,owners.front(),"_VectorDrawableBoxState._resolveTintColor"))return false;
   const auto&owner=owners.front();uint64_t end=owner.value+owner.size;
   uint64_t select=0,call=0,join=0;
   for(uint64_t pc=owner.value+4;pc+64<=end;pc+=4){
@@ -264,7 +407,7 @@ static bool plan_compound_wrapping(const ElfImage&image,uintptr_t live,const Wid
  const char*name="_FlutterTextViewState._applyDrawableTint";
  auto owners=image.named(name),callers=image.named("_FlutterTextViewState._buildCompoundDrawableWidget");
  // Wrap the caller's original Widget in x2 before the provider tint runs.
- if(!(owners.size()==1&&callers.size()==1&&dart_widget_frame(image,owners.front())&&
+ if(!(owners.size()==1&&callers.size()==1&&dart_frame(image,owners.front())&&
      named_widget_call(image,callers.front(),name,0xaa0003e2)&&
      named_widget_call(image,owners.front(),"_FlutterTextViewState._tintedCompoundCopy")&&
      add_widget_branch(image,live,owners.front().value,adapter_address(out,wrap.compound),HG_WIDGET_COMPOUND,false,patches)))return false;
@@ -282,7 +425,7 @@ static bool plan_background_filter(const ElfImage&image,uintptr_t live,uint64_t 
     image.named("RenderViewDecorationMixin._paintDrawableAt").empty()||
     !image.named("_ImageViewState._buildBackgroundOnlyFuture").empty())return false;
  const auto&content=contents.front();const auto&tree=trees.front();
- if(!dart_widget_frame(image,content)||!dart_widget_frame(image,tree)||
+ if(!dart_frame(image,content)||!dart_frame(image,tree)||
     call<tree.value+0x24||call+8>tree.value+tree.size||
     image.word(tree.value+0x10)!=0xf81f03a1||image.word(call-4)!=0xf87e7abe||image.word(call)!=0xd63f03c0||
     image.word(content.value+12)!=0x9100c2c0||image.word(content.value+0x28)!=0xb803b060)return false;
@@ -388,9 +531,99 @@ static bool prefer_live_boundary(const ElfImage&image,uintptr_t live,const char*
  add(guards.front().first,0xaa0003e0|(no<<16)|(select&31));add(guards.front().second,0xd503201f);
  diagnostic+=std::string(name)+": current boundary selected over flight bitmap cache; ";return true;
 }
+
+static bool plan_maml_repaint(const ElfImage&image,uintptr_t live,uintptr_t adapter,Resolved&out){
+ auto keys=image.named("MamlIconCache.getGlobalKeyForTag");
+ auto elements=image.named("GlobalKey._currentElement");
+ auto hashes=image.named("_getHash");
+ auto lengths=image.named("_HashVMBase._usedData");
+ auto iterators=image.named("_CompactIterator.moveNext");
+ auto strings=image.named("allocateOneByteString");
+ auto controllers=image.named("ShortcutIconGetxController.get");
+ auto render_objects=image.named("Element.findRenderObject");
+ if(keys.size()!=1||elements.size()!=1||hashes.size()!=1||lengths.size()!=1||
+    iterators.size()!=1||strings.size()!=1||controllers.size()!=1||render_objects.size()!=1)return false;
+
+ const uint64_t key=keys.front().value,element=elements.front().value;
+ const uint64_t hash=hashes.front().value,length=lengths.front().value,iterator=iterators.front().value;
+ const uint64_t string=strings.front().value;
+ // Both registries use the current isolate field table. The element
+ // lookup binds BuildOwner's map, then checks the compact map's data sentinel.
+ uint32_t table=image.word(key+0x14),tags=image.word(key+0x18),binding=image.word(element+0x14);
+ uint32_t owner=image.word(element+0x20),registry=image.word(element+0x34);
+ if((table&0xffc003ff)!=0xf9400340||table!=image.word(element+0x10)||
+    (tags&0xffc003ff)!=0xf9400000||(binding&0xffc003ff)!=0xf9400000||
+    image.word(key+0x1c)!=0xf9402370||image.word(key+0x20)!=0x6b10001f||
+    (owner&0xffe0001f)!=0xd2800011||image.word(element+0x24)!=0xb8716801||
+    image.word(element+0x28)!=0x8b1c8021||(registry&0xffe00fff)!=0xb8400020||
+    image.word(element+0x38)!=0x8b1c8000||image.word(element+0x3c)!=0xaa0003e1||
+    image.word(element+0x4c)!=0xb840f022||image.word(element+0x54)!=0x6b00005f)return false;
+ if(!named_widget_call(image,keys.front(),"_LinkedHashMapMixin.putIfAbsent")){
+  // The VM emits several generic instantiations, so qualify the actual BL.
+  uint32_t call=image.word(key+0x54);
+  auto implementations=image.named("_LinkedHashMapMixin.putIfAbsent");
+  if((call&0xfc000000)!=0x94000000||std::none_of(implementations.begin(),implementations.end(),[&](const Symbol&s){
+   return s.value==branch_target(call,key+0x54);
+  }))return false;
+ }
+ uint32_t lookup=image.word(element+0x44);
+ auto lookups=image.named("_LinkedHashMapMixin._getValueOrData");
+ if((lookup&0xfc000000)!=0x94000000||std::none_of(lookups.begin(),lookups.end(),[&](const Symbol&s){
+  return s.value==branch_target(lookup,element+0x44);
+ }))return false;
+
+ // Corroborate the model identity hash, compact-map cursor and string
+ // layout through the running ELF's own VM stubs.
+ if(image.word(hash)!=0xf94001e0||image.word(hash+4)!=0xb8403000||image.word(hash+12)!=0xd37ff800||
+    image.word(length)!=0xf94001e1||image.word(length+4)!=0xb8413020||
+    image.word(iterator+0x64)!=0xb840b066||image.word(iterator+0x68)!=0x93417cc7||
+    image.word(iterator+0x90)!=0x8b080870||image.word(iterator+0x94)!=0xb840f200||
+    image.word(iterator+0x98)!=0x8b1c8000||image.word(iterator+0x9c)!=0x6b03001f)return false;
+ uint32_t first=image.word(string+0x58),second=image.word(string+0x5c);
+ if((first&0xffe0001f)!=0xd2800010||(second&0xffe0001f)!=0xf2a00010||
+    image.word(string+0x60)!=0xaa100042||image.word(string+0x64)!=0xf81ff002||
+    image.word(string+0x6c)!=0xb8007006)return false;
+ uint32_t tag=uint32_t(instruction_immediate(first))|uint32_t(instruction_immediate(second));
+ if((tag&0xfff)!=0x5c||tag>>12==0)return false;
+
+ std::vector<Patch> patches;
+ for(const char*name:{"SfAnimIconCapture._buildLayersFromIconInfo","SfWindowAnimImplementor.prepareIconLayers"}){
+  auto functions=image.named(name);
+  if(functions.size()!=1)return false;
+  const auto&function=functions.front();
+  auto controller_calls=direct_calls(image,function,controllers.front().value);
+  auto key_calls=direct_calls(image,function,element);
+  size_t count=0;
+  for(uint64_t call:key_calls){
+   uint32_t load_model=image.word(call-24),load_key=image.word(call-8);
+   unsigned model_reg=(load_model>>5)&31;
+   if((model_reg!=0&&model_reg!=2)||(load_model&~0x3e0u)!=0xf8417001||
+      image.word(call-20)!=0xf100203f||(image.word(call-16)&0xff00001f)!=0x54000001||
+      (image.word(call-12)&0xffe0001f)!=0xd2800011||
+      load_key!=(0xb8716801|((model_reg^2u)<<5))||image.word(call-4)!=0x8b1c8021||
+      image.word(call+4)!=0x6b16001f||image.word(call+8)!=0x54000061||
+      image.word(call+20)!=0xaa0003e1||(image.word(call+24)&0xfc000000)!=0x94000000||
+      branch_target(image.word(call+24),call+24)!=render_objects.front().value||
+      std::none_of(controller_calls.begin(),controller_calls.end(),[&](uint64_t pc){return pc<call-24&&call-pc<=64;}))
+    continue;
+   if(!add_widget_branch(image,live,call-4,adapter+(model_reg?8:0),2,true,patches))return false;
+   count++;
+  }
+  if(count!=1)return false;
+ }
+ out.maml_repaint={uint32_t(instruction_immediate(table)),uint32_t(instruction_immediate(tags)),
+                   uint32_t(instruction_immediate(binding)),uint32_t(instruction_immediate(owner)),
+                   uint32_t(instruction_immediate(registry)),tag>>12};
+ out.patches.insert(out.patches.end(),patches.begin(),patches.end());
+ return true;
+}
+
 bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolved&out,bool allocate){
  ElfImage image;std::string error;if(!image.load(path,error)){out.diagnostic=error;return false;}
- Locator locator(image,program);out.addresses.resize(program.anchor_count);
+ SceneFrame scene;
+ const char*scene_failure=program.config_count?locate_scene_frame(image,scene):nullptr;
+ if(scene_failure)scene=SceneFrame{};
+ Locator locator(image,program,scene.marks);out.addresses.resize(program.anchor_count);
  for(size_t i=0;i<program.anchor_count;i++)out.addresses[i]=locator.resolve(i);
  size_t page=size_t(sysconf(_SC_PAGESIZE));std::set<uint32_t>pages;
  for(size_t i=0;i<program.unit_count;i++)if(program.units[i].shadow){const auto&u=program.units[i];for(uint32_t at=u.source&~uint32_t(page-1),end=(u.source+u.size+page-1)&~uint32_t(page-1);at<end;at+=uint32_t(page))pages.insert(at);}
@@ -399,6 +632,10 @@ bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolv
  if(span&&!out.shadow){out.diagnostic="no nearby private adapter range";return false;}
  size_t next=0;for(uint32_t at:pages)out.adapter_pages.emplace_back(at,out.shadow+(next++)*page);
  uint32_t ready=0;for(size_t i=0;i<program.group_count;i++)ready|=program.groups[i];
+ if(scene_failure){
+  ready&=~2u;
+  out.diagnostic+=std::string("Dart scene frame ABI: ")+scene_failure+"; ";
+ }
  for(size_t i=0;i<program.constraint_count;i++){
   const auto&c=program.constraints[i];uint32_t left=out.addresses[size_t(c.left)];bool valid=false;
   if(c.right<0){bool decoded=false;int64_t value=instruction_immediate(image.word(left),&decoded);valid=left&&decoded&&(c.kind==ConstraintKind::Minimum?value>=c.delta:value==c.delta);}
@@ -474,7 +711,7 @@ bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolv
   ready|=out.adapted_widget_paths;
  }
  for(const auto&failure:unresolved_wrapping)if(!(out.adapted_widget_paths&failure.first))out.diagnostic+=std::string(failure.second)+": unresolved address/relocation; ";
- std::array<uint32_t,32>config{};std::array<bool,32>known{};
+ std::array<uint32_t,HG_CAPTURE_CONFIG_WORDS>config{};std::array<bool,HG_CAPTURE_CONFIG_WORDS>known{};
  for(size_t i=0;i<program.config_count;i++){
   const auto&rule=program.config[i];uint32_t pc=rule.anchor>=0?out.addresses[size_t(rule.anchor)]:0;uint64_t value=0;bool valid=pc!=0;
   if(valid&&rule.kind==1){
@@ -493,8 +730,13 @@ bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolv
   for(unsigned i=16;i<=30;i++)widget=widget&&known[i]&&config[i]>0&&config[i]<0x10000;
   if(!snapshot){ready&=~2u;out.diagnostic+="snapshot allocation/layout graph unresolved; ";}
   if(!widget){ready&=~4u;out.diagnostic+="Android container layout unresolved; ";}
-  for(size_t i=0;i<program.unit_count;i++)if(program.units[i].source==program.config_source&&payloads[i].size()>=program.config_count*4){
-   memcpy(payloads[i].data(),config.data(),program.config_count*4);
+  config[HG_CAPTURE_LAYER_SLOT]=uint32_t(scene.layer);
+  config[HG_CAPTURE_BOUNDS_SLOT]=uint32_t(scene.bounds);
+  config[HG_CAPTURE_ROUND_SLOT]=uint32_t(scene.round);
+  config[HG_CAPTURE_VIEW_SLOT]=uint32_t(scene.view);
+  for(size_t i=0;i<program.unit_count;i++)if(program.units[i].source==program.config_source){
+   if(payloads[i].size()==sizeof(config))memcpy(payloads[i].data(),config.data(),sizeof(config));
+   else {ready&=~(2u|4u|uint32_t(HG_WIDGET_MONOCHROME));out.diagnostic+="capture configuration payload size mismatch; ";}
   }
  }
  // Each monochrome route still needs the common widget adapters.
@@ -504,6 +746,14 @@ bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolv
  if((ready&2)&&!strcmp(program.image,"libapp.so")){
   for(const char*name:{"SfAnimIconCapture._buildLayersFromIconInfo","SfWindowAnimImplementor.prepareIconLayers"})if(!prefer_live_boundary(image,live,name,out.patches,out.diagnostic)){
    ready&=~2u;out.diagnostic+="live icon boundary cache guard unresolved; ";break;
+  }
+  if(ready&2){
+   uintptr_t repaint=0;
+   for(size_t i=0;i<program.unit_count;i++)if(!strcmp(program.units[i].label,".maml_repaint"))
+    repaint=adapter_address(out,program.units[i].source);
+   if(!repaint||!plan_maml_repaint(image,live,repaint,out)){
+    ready&=~2u;out.diagnostic+="MAML repaint registry or SF capture ABI unresolved; ";
+   }
   }
  }
  for(size_t i=0;i<program.unit_count;i++){

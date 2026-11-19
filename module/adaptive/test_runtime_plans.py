@@ -1,7 +1,7 @@
 import os
 """Execute the native resolver's relocated bytes against each target's Dart layout."""
 from pathlib import Path
-import json,struct,sys
+import json,math,struct,sys
 from elftools.elf.elffile import ELFFile
 from unicorn import Uc,UC_ARCH_ARM64,UC_MODE_ARM,UC_HOOK_CODE
 import unicorn.arm64_const as R
@@ -125,6 +125,16 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
     assert any(qi(u,fp+off)==nil+0x30 for off in range(-1024,0,8))
   print('PASS current attached boundaries replace cached/static flight images on both animation paths:',Path(planpath).name,flush=True)
  u=setup();cfg=struct.unpack('<31I',u.mem_read(address(0xb33600),124))
+ scene_layer,scene_bounds,scene_round,scene_view=struct.unpack('<4i',u.mem_read(address(0xb33600)+124,16))
+ scene_return=address(0x191a61c)
+ def original_word(pc):return struct.unpack('<I',target.read(pc-base,4))[0]
+ assert [scene_layer,scene_bounds,scene_round]==[immediate(original_word(scene_return+offset))for offset in (-16,-12,8)]
+ def prepare_scene(u,child,bounds,floor):
+  # Poison the reference slots before setting the current launcher layout.
+  for offset in range(-0xa8,-0x78,8):q(u,0x2fb000+offset,nil)
+  q(u,0x2fb000+scene_layer,child);q(u,0x2fb000+scene_bounds,bounds)
+  q(u,0x2fb000+scene_round,nil+(0x20 if floor else 0x30));q(u,0x2fb000+scene_view,0)
+  q(u,0x2fa008,scene_return)
  # Match only the first full-size, non-interactive shape in the root group.
  for case in ['plate','color','cloned-view','layout-child','photo','vector','button','sized','nested','later-child','single-child']:
   u=setup();state,view,control,layout,parent,owner,children,items,drawable=[heap+0x20001+i*0x1000 for i in range(9)]
@@ -153,8 +163,9 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
   if hidden:assert u.reg_read(regs[0])==heap+0x3e001
   assert bytes(u.mem_read(heap+0x20000,0x9000))==before,case
  print('PASS native relocated shape background detection; photos, controls, nested panels and provider state retained:',Path(planpath).name,flush=True)
- for kind,scope in [(1,0x19b0dc8),(2,0x1b136bc),(3,0x199c894)]:
-  u=setup();child,root,data,bounds=ns['scene'](u)
+ for kind,scope,floor in [(1,0x19b0dc8,True),(2,0x1b136bc,False),(3,0x199c894,True),
+                         (1,0x19c08e4,False),(1,0x1b15874,True)]:
+  u=setup();child,root,data,bounds=ns['scene'](u,floor=floor)
   w(u,child-1,(cfg[3]<<12)|0x500);w(u,root-1,(cfg[2]<<12)|0x700)
   picture=heap+0x13001
   w(u,child+0x47,picture);w(u,picture-1,(cfg[15]<<12)|0x600)
@@ -167,7 +178,8 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
   if cfg[12]!=0x2b:w(u,root+0x2b,nil)
   w(u,root+cfg[12],qview);w(u,qview+cfg[10],qconf);w(u,qconf+cfg[11],qphysical)
   ds(u,qphysical+cfg[13],[1120]);ds(u,qphysical+cfg[14],[2436])
-  for at,old in [(0x2fa008,0x191a61c),(0x2fc008,scope)]:q(u,at,address(old))
+  prepare_scene(u,child,bounds,floor)
+  q(u,0x2fc008,address(scope))
   # Compiler changed the image local slot in 9226; the gateway must replay it.
   for i in range(32):u.reg_write(getattr(R,f'UC_ARM64_REG_Q{i}'),0x112233445566778899aabbccddeeff00+i)
   vectors=[u.reg_read(getattr(R,f'UC_ARM64_REG_Q{i}'))for i in range(32)]
@@ -178,13 +190,29 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
   assert wi(u,picture+0x23)==(nil+0x20)&0xffffffff
   b=struct.unpack('<4d',u.mem_read(bounds+7,32));assert int(b[0])-1048576==69 and int(b[1])-1048576==802
   assert vectors==[u.reg_read(getattr(R,f'UC_ARM64_REG_Q{i}'))for i in range(32)]
-  assert qi(u,0x2faf68)==kind<<29
+  assert qi(u,0x2fb000+scene_view)==kind<<29
+  rounding=math.floor if floor else math.ceil
+  assert rounding((b[2]-b[0])*2.85)==1120 and rounding((b[3]-b[1])*2.85)==2436
+  # Use the live frame chain and shifted parent slots in the ancestor hook.
+  q(u,0x2f9000,0x2fa000);q(u,0x2f9008,address(0xa02928))
+  u.reg_write(regs[29],0x2f9000);u.reg_write(regs[30],0x3f0000);u.reg_write(regs[0],child)
+  u.emu_start(address(symbols['limit_test']),0x3f0000,count=2000)
+  assert u.reg_read(regs[16])==1
+  # Both patched returns mark the image, then replay the current Dart store.
+  image,native=heap+0x11001,heap+0x11101
+  w(u,image+7,native);q(u,image+15,1120);q(u,image+23,2436)
+  u.reg_write(regs[29],0x2fb000);u.reg_write(regs[0],image)
+  mark=address(0x191a74c if floor else 0x191a8b8)
+  u.emu_start(mark,mark+4,count=10000)
+  assert u.reg_read(R.UC_ARM64_REG_PC)==mark+4 and qi(u,image+15)==171
+  assert qi(u,0x2fb000+immediate(original_word(mark)))==image
+ print('PASS relocated scene slots, floor/ceil writeback, material stage and current capture scopes:',Path(planpath).name,flush=True)
  # Execute mark, clone and the actual byte-export gateway after compaction.
  u=setup();child,root,data,bounds=ns['scene'](u)
  w(u,child-1,(cfg[3]<<12)|0x500);w(u,root-1,(cfg[2]<<12)|0x700)
  if cfg[10]!=0x5b:w(u,heap+0x10701+0x5b,nil)
  w(u,heap+0x10701+cfg[10],heap+0x10801)
- q(u,0x2fa008,address(0x191a61c));q(u,0x2fc008,address(0x19b0dc8))
+ prepare_scene(u,child,bounds,True);q(u,0x2fc008,address(0x19b0dc8))
  u.emu_start(address(symbols['root_gateway']),address(0xa02918),count=4000000)
  image,native,clone=heap+0x11001,heap+0x11101,heap+0x11201
  w(u,image+7,native);q(u,image+15,1120);q(u,image+23,2436);u.reg_write(regs[29],0x2fb000);u.reg_write(regs[0],image)

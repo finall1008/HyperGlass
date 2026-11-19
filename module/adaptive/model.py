@@ -10,6 +10,7 @@ import struct,collections,bisect
 from inspect_pair import Image,words
 
 NAMED_CALL, OPERAND_SEQUENCE, BRANCH_DESTINATION, RELATIVE_SEQUENCE = range(6,10)
+SCENE_FLOOR, SCENE_CEIL = range(10,12)
 
 def arm_mask(w,frames=True):
  if w&0x7c000000==0x14000000:return 0xfc000000
@@ -143,6 +144,10 @@ class Model:
  def after_call(self,va,call,delta,window):
   index=self.add(va,frames=False,window=window);a=self.anchors[index]
   a.mode=RELATIVE_SEQUENCE;a.dependency=call;a.delta=delta
+  return index
+ def scene_mark(self,va,mode,delta):
+  index=self.add(va);a=self.anchors[index]
+  a.mode=mode;a.delta=delta
   return index
  def helpers(self,image,owner,symbols):
   prefix=owner.rsplit('.',1)[0]+'.';seen={s[0]for s in symbols}

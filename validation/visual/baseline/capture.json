@@ -1,0 +1,60 @@
+{
+  "scenes": {
+    "icon-rest": {},
+    "icon-open": {
+      "attempt": 1,
+      "frame": 76,
+      "phase": 0.0303
+    },
+    "icon-return": {
+      "attempt": 1,
+      "frame": 100,
+      "phase": 0.0171
+    },
+    "icon-returned": {},
+    "folder-closed": {},
+    "folder-rest": {},
+    "folder-open": {
+      "attempt": 1,
+      "frame": 82,
+      "phase": 0.0052
+    },
+    "folder-return": {
+      "attempt": 1,
+      "frame": 101,
+      "phase": 0.0048,
+      "home_difference": 0.1871
+    },
+    "folder-returned": {},
+    "drawer-rest": {},
+    "drawer-open": {
+      "attempt": 1,
+      "frame": 85,
+      "phase": 0.0112
+    },
+    "drawer-return": {
+      "attempt": 1,
+      "frame": 99,
+      "phase": 0.012,
+      "home_difference": 0.4008
+    },
+    "drawer-returned": {},
+    "android-widget": {},
+    "maml-weather-rest": {},
+    "maml-weather-monochrome": {},
+    "maml-weather-return": {
+      "attempt": 1,
+      "frame": 101,
+      "phase": 0.0083,
+      "home_difference": 0.1719
+    },
+    "maml-weather-open": {
+      "attempt": 2,
+      "frame": 100,
+      "phase": 0.1893
+    },
+    "maml-weather-returned": {}
+  },
+  "issues": [],
+  "launcher": "RELEASE-8.01.03.308-261102-11171006-R"
+}

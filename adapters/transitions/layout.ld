@@ -12,6 +12,7 @@ SECTIONS {
  .widget_spans 0x2000040 : { *(.widget_spans) }
  .widget_wrap 0x2000080 : { *(.widget_wrap) }
  .widget_image_filter 0x2000100 : { *(.widget_image_filter) }
+ .maml_repaint 0x2000140 : { *(.maml_repaint) }
  /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) }
 }
 async_scene_return = 0x191a61c;

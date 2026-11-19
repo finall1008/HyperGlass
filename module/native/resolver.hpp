@@ -1,12 +1,13 @@
 #pragma once
 #include "elf_image.hpp"
 #include "runtime.h"
+#include <array>
 #include <string>
 #include <vector>
 namespace hg {
 struct RegisterRelation { uint8_t left,left_shift,right,right_shift; };
 struct Anchor {
- enum Mode : uint8_t { NamedCall=6, OperandSequence, BranchDestination, RelativeSequence };
+ enum Mode : uint8_t { NamedCall=6, OperandSequence, BranchDestination, RelativeSequence, SceneFloor, SceneCeil };
  const char *owner;
  uint32_t source;
  uint8_t before,count,mode;
@@ -43,21 +44,25 @@ struct Program {
  const WidgetWrap *widget_wrap=nullptr;
 };
 using Patch = hg_patch;
+struct MamlRepaintLayout {
+ uint32_t field_table=0, tag_map=0, binding=0, build_owner=0, element_map=0, string_class=0;
+};
 struct Resolved {
  std::vector<Patch> patches;
  uintptr_t shadow=0;size_t shadow_size=0;uint32_t ready=0;
  uint32_t adapted_widget_paths=0;
  std::vector<uint32_t> addresses;
  std::vector<std::pair<uint32_t,uintptr_t>> adapter_pages;
+ MamlRepaintLayout maml_repaint;
  std::string diagnostic;
 };
 class Locator {
  public:
-  Locator(const ElfImage &image,const Program &program):image_(image),program_(program),resolved_(program.anchor_count,-1),candidates_(program.anchor_count,0){}
+  Locator(const ElfImage &image,const Program &program,const std::array<uint64_t,2>&scene_marks):image_(image),program_(program),scene_marks_(scene_marks),resolved_(program.anchor_count,-1),candidates_(program.anchor_count,0){}
   uint32_t resolve(size_t index);
   unsigned candidates(size_t index)const{return candidates_[index];}
  private:
-  const ElfImage &image_;const Program &program_;
+  const ElfImage &image_;const Program &program_;std::array<uint64_t,2> scene_marks_;
   std::vector<int64_t> resolved_;std::vector<unsigned>candidates_;
   void scan(const Anchor &anchor,uint64_t begin,uint64_t end,std::vector<uint32_t>&exact,std::vector<uint32_t>&elastic);
   void append_helpers(const char*owner,std::vector<Symbol>&functions) const;

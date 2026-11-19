@@ -13,5 +13,6 @@
 - 所有构建使用既定 release key。私钥、密码和参考系统 APK/SO 不入 Git；本地通过 Keychain，CI 通过 Actions Secrets。签名缺失直接失败，禁止生成或回退 debug key。
 - `config/signing-lineage.bin` 为公开证书轮换证明，保留已有安装的覆盖升级能力。
 - 原生代码修改运行离线、host 与 Android 适用测试。CI 通过后再发布相同提交的 APK。
+- 新桌面 APK 按 [桌面适配验证](docs/launcher-adaptation.md) 完成离线解析、模拟器日志和视觉对照。
 - 真机安装、输入和截图须有用户授权；使用 root ADB，禁止 CUA、录屏和整机重启。保留真机壁纸、应用数据及其他模块配置。需要整机重启时交给用户操作。
 - Git 提交身份：`finall1008 <wymxx55@outlook.com>`。
