@@ -81,7 +81,7 @@ for rule in catalog.config:
  if rule.kind==1:
   target=branch_target(struct.unpack('<I',image.read(pc,4))[0],pc);words=list(struct.unpack('<3I',image.read(target,12)))
   tag=immediate(words[0])|(((words[1]>>5)&65535)<<(((words[1]>>21)&3)*16))
-  tag+=(0x120 if rule.slot<5 or rule.slot==15 else 0x200 if rule.slot==5 else 0x300)<<12
+  tag+=(0x120 if rule.slot<5 or rule.slot==15 or rule.slot>=35 else 0x200 if rule.slot==5 else 0x300)<<12
   for i in range(2):words[i]=(words[i]&~(65535<<5))|(((tag>>(((words[i]>>21)&3)*16))&65535)<<5)
   put_words(target,words)
  elif rule.slot in [6,9]:

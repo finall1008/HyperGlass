@@ -33,7 +33,7 @@ for va in [0x19bf004,0x1b147a4]:patch(va,bytes.fromhex('1f2003d5'),'Use the comp
 linked=ELFFile(open(H/'capture.elf','rb'))
 limits={'.capture_root':0xb33300-0xb32838,'.widget_helpers':0xb33600-0xb33300,'.capture_meta':0xce29cc-0xce2770,'.hooks':0x11f3180-0x11f30a0,'.capture_small':0x11f3358-0x11f3180,'.limit_test':0x1811460-0x18113a0,'.bridge':0x19bfef0-0x19bfdb0,'.text_color':0x98bea4-0x98bdc0}
 limits['.badge']=64
-if flags:limits.update({'.capture_config':140,'.widget_spans':12,'.widget_wrap':96,'.widget_image_filter':20,'.maml_repaint':64})
+if flags:limits.update({'.capture_config':156,'.widget_spans':12,'.widget_wrap':96,'.widget_image_filter':20,'.maml_repaint':64})
 for sec in linked.iter_sections():
  if sec['sh_type']in ['SHT_REL','SHT_RELA']:assert sec['sh_size']==0
  if sec['sh_flags']&2 and sec['sh_size']:assert sec.name in limits,sec.name

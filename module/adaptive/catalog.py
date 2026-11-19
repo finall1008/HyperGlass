@@ -67,7 +67,7 @@ class Catalog:
    anchor.mode=5;anchor.dependency=self.model.add(0x1b147a4,frames=False,control=True)
    anchor.callee='RenderRepaintBoundary.toImage';anchor.delta=4
    return Target(va,index,0)
-  control=va in [0x199c894,0x10b85d0,0x10b9534,0x19bf198,0x19c08e4,0x1b15874]
+  control=va in [0x199c894,0x10b85d0,0x10b9534,0x19c08e4,0x1b15874]
   return Target(va,self.model.add(va,frames=False if control else None,control=control),0)
  def add_rows(self,rows,style_count=0):
   skip={0x19bfc68,0x19bfc74,0x181131c,0xb32828,0xce275c,0x11f308c}
@@ -107,9 +107,7 @@ class Catalog:
      delta=((w>>29)&3)|(((w>>5)&0x7ffff)<<2);delta=delta-(1<<21)if delta&(1<<20)else delta
      if not w&(1<<31):unit.relocations.append(Reloc(off,4,self.target(pc+delta),w));continue
      page=(pc&-4096)+delta*4096;reg=w&31;consumers=[]
-     if any(u.shadow and (u.source&-4096)<=page<((u.source+len(u.data)+4095)&-4096)for u in self.units):
-      unit.relocations.append(Reloc(off,5,Target(page,-1,1),w));continue
-     for q in range(pc+4,min(unit.source+len(unit.data),pc+52),4):
+     for q in range(pc+4,unit.source+len(unit.data),4):
       if q not in code:break
       v=struct.unpack_from('<I',unit.data,q-unit.source)[0];rn=(v>>5)&31
       is_add=v&0x1f000000==0x11000000 and not(v&(1<<30))and not(v&(1<<22))
@@ -122,9 +120,11 @@ class Catalog:
       else:
        ins=list(self.md.disasm(struct.pack('<I',v),q))
        if ins:
-        _,writes=ins[0].regs_access();name='x'+str(reg)
-        if any(ins[0].reg_name(x)==name for x in writes):break
+        _,writes=ins[0].regs_access();names=(f'x{reg}',f'w{reg}')
+        if any(ins[0].reg_name(x) in names for x in writes):break
      if not consumers:raise ValueError(('ADRP without address consumer',unit.label,hex(pc)))
+     # A reference page can contain both adapter code and an original Dart
+     # return PC. Classify the address used by ADD/LDR, not the whole page.
      all_shadow=all((self.unit_at(t)and self.unit_at(t).shadow)for _,_,t,_ in consumers)
      if all_shadow:
       unit.relocations.append(Reloc(off,5,Target(page,-1,1),w))
@@ -158,9 +158,16 @@ class Catalog:
  def add_config(self):
   self.config_source=0xb33600
   specs=[(0,0xfb6228),(1,0xfc55cc),(2,0xa07d04),(3,0x1038114),(4,0x1037d80),(5,0x14ebf74),(7,0xc1e528),(8,0xc19da0),(15,0xfaa65c),(17,0x18d99a4),(18,0x18d994c),(30,0xc2e648)]
+  # Clip and child-only filter classes come from their PaintingContext
+  # allocators. The same layer links are checked by the snapshot ABI rules.
+  specs.extend([(35,0xfb2ed0),(36,0xfb89ac),(37,0xfb3b5c),(38,0xfb6614)])
   for slot,pc in specs:
    w=struct.unpack('<I',self.model.image.read(pc,4))[0];callee=branch_target(w,pc);first,second,_=struct.unpack('<3I',self.model.image.read(callee,12));tag=immediate(first)|(((second>>5)&65535)<<(((second>>21)&3)*16))
-   anchor=self.model.add(pc,frames=False,control=pc==0xfc55cc);self.config.append(Config(slot,1,7 if slot==8 else -1,anchor,tag))
+   # The ClipRRect constructor can initialize additional fields after BL.
+   # Its reuse guard and the allocation stub establish the class.
+   window=(8,1) if pc==0xfb3b5c else None
+   anchor=self.model.add(pc,frames=False,control=pc==0xfc55cc,window=window)
+   self.config.append(Config(slot,1,7 if slot==8 else -1,anchor,tag))
   for slot,pc in [(6,0x19bf008),(9,0x1b151a8),(10,0xa07b58),(11,0xade798),(12,0x15c7ddc),(13,0xade994),(14,0xade920),(16,0xbf6c08),(19,0xe02fcc),(20,0xe036e0),(21,0xc2e138),(22,0xc5cf50),(23,0xc0f434),(24,0xc0f4ac),(25,0xbf6bdc),(26,0xc2e148),(27,0xc2e14c),(28,0xc2e198)]:self.config.append(Config(slot,2,-1,self.model.add(pc,frames=False)))
   self.config.append(Config(29,2,-1,self.model.add(0x15e183c,frames=False)))
  def report(self,target):
@@ -242,7 +249,7 @@ def snapshot_anchors(model):
  model.operand_sequence(0xd0febc,0xd0fe94,
   (0xfffffc00,0xfffffc00,0xff80001f,*([0xffffffff]*11)),
   ((0,0,1,5),(1,0,2,5)))
- for pc in (0x199c894,0x19c08e4,0x1b15874):
+ for pc in (0x199c894,0x19bf198,0x19c08e4,0x1b15874):
   model.named_call(pc,'RenderRepaintBoundary.toImage',delta=4)
  model.named_call(0x191a61c,'OffsetLayer._createSceneForImage',delta=4)
  for pc,mode in ((0x191a74c,SCENE_FLOOR),(0x191a8b8,SCENE_CEIL)):

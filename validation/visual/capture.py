@@ -445,23 +445,31 @@ def check_blur(video, returning, spec, settled, output, name):
     }
 
 
+def centered_disk(height, width, radius):
+    y, x = np.ogrid[:height, :width]
+    return (x - width / 2) ** 2 + (y - height / 2) ** 2 <= radius ** 2
+
+
 def icon_luma(images, radius):
     height, width = images.shape[-3:-1]
-    y, x = np.ogrid[:height, :width]
-    disk = (x - width / 2) ** 2 + (y - height / 2) ** 2 <= radius ** 2
+    disk = centered_disk(height, width, radius)
     luma = images[..., disk, :] @ np.array([0.2126, 0.7152, 0.0722])
     dark, median, light = np.quantile(luma, [0.03, 0.5, 0.97], axis=-1)
     return median, (light - median) - (median - dark)
 
 
+def settling_difference(images, home, box):
+    # Select the landing pose using the rest of the desktop. The tested
+    # icon cannot admit or exclude a frame by changing its own appearance.
+    moved = np.any(np.abs(images[:, 20:-18].astype(np.int16) - home) > PIXEL_CHANGE_THRESHOLD, axis=3)
+    x0, y0, x1, y1 = motion_box(box)
+    moved[:, max(0, y0 - 20):max(0, y1 - 20), x0:x1] = False
+    return np.mean(moved, axis=(1, 2))
+
+
 def check_icon_polarity(video, returning, spec, settled, output, name):
     images, phases, home = motion(video, returning, "", SOURCE_TIMING)
-    # Select the landing pose using the rest of the desktop. The tested icon
-    # cannot admit or exclude a frame by changing its own brightness.
-    moved = np.any(np.abs(images[:, 20:-18].astype(np.int16) - home) > PIXEL_CHANGE_THRESHOLD, axis=3)
-    x0, y0, x1, y1 = motion_box(spec["box"])
-    moved[:, max(0, y0 - 20):max(0, y1 - 20), x0:x1] = False
-    difference = np.mean(moved, axis=(1, 2))
+    difference = settling_difference(images, home, spec["box"])
     lower, upper = spec["home_difference"]
     frames = np.flatnonzero((phases <= spec["max_app_phase"]) & (difference >= lower) & (difference <= upper))
     limits = spec["limits"]
@@ -496,6 +504,120 @@ def check_icon_polarity(video, returning, spec, settled, output, name):
             for frame, luma, polarity in zip(frames, lumas, polarities, strict=True)
         ],
     }
+
+
+def foreground_bounds(mask):
+    y, x = np.nonzero(mask)
+    if not x.size:
+        return None
+    return np.quantile(np.column_stack((x, y)), [0.01, 0.99], axis=0)
+
+
+def within_one_pixel(mask):
+    padding = ((0, 0),) * (mask.ndim - 2) + ((1, 1), (1, 1))
+    neighborhoods = np.lib.stride_tricks.sliding_window_view(np.pad(mask, padding), (3, 3), axis=(-2, -1))
+    return neighborhoods.any(axis=(-2, -1))
+
+
+def check_icon_landing(video, returning, spec, settled, output, name):
+    images, phases, home = motion(video, returning, "", SOURCE_TIMING)
+    box, limits = spec["box"], spec["limits"]
+    difference = settling_difference(images, home, box)
+    late = (phases <= spec["max_app_phase"]) & (difference <= spec["late_difference"])
+    not_late = np.flatnonzero(~late)
+    if not not_late.size:
+        raise RuntimeError("Recording never leaves the landing window")
+    first = int(not_late[-1]) + 1
+    stationary = np.flatnonzero(difference[first:] <= spec["settled_difference"])
+    if not stationary.size:
+        raise RuntimeError("Recording never reaches the settled panel")
+    panel_frame = first + int(stationary[0])
+    end = panel_frame + spec["follow_frames"]
+    if panel_frame - first < limits["min_frames"] or end + 8 > len(images):
+        raise RuntimeError("Recording lacks source frames on both sides of icon landing")
+
+    frames = np.arange(panel_frame - limits["min_frames"], end)
+    recorded = decode_crops(video, [*frames, *range(len(images) - 8, len(images))], box)
+    tail = np.median(recorded[len(frames):], axis=0).astype(np.uint8)
+    _, mean, _ = pixel_diff(Image.fromarray(tail), settled.crop(box))
+    if mean > 8:
+        raise RuntimeError(f"Settled recording does not match the panel screenshot (mean RGB {mean:.2f})")
+    # Compare to the first settled icon in the same landing window. The
+    # live panel can refresh its backdrop again later in the recording.
+    crops = recorded[:len(frames)]
+    reference_count = limits["min_frames"]
+    reference = np.median(crops[-reference_count:], axis=0).astype(np.uint8)
+
+    probe = spec["glyph"]
+    left, top, right, bottom = probe["box"]
+    glyphs = np.min(crops[:, top:bottom, left:right], axis=-1) >= probe["min_rgb"]
+    glyph = np.min(reference[top:bottom, left:right], axis=-1) >= probe["min_rgb"]
+    if radius := probe.get("exclude_center_radius"):
+        # The hands can legitimately move between snapshot and live drawing.
+        # Match the fixed tick marks to within one recorded pixel.
+        perimeter = ~centered_disk(*glyph.shape, radius)
+        glyphs &= perimeter
+        glyph &= perimeter
+        matches = np.count_nonzero(glyphs & within_one_pixel(glyph), axis=(1, 2))
+        matches += np.count_nonzero(within_one_pixel(glyphs) & glyph, axis=(1, 2))
+    else:
+        matches = 2 * np.count_nonzero(glyphs & glyph, axis=(1, 2))
+    if (rest_bounds := foreground_bounds(glyph)) is None:
+        raise RuntimeError("No icon foreground at the settled target")
+    overlap = matches / (np.count_nonzero(glyphs, axis=(1, 2)) + np.count_nonzero(glyph))
+    centers, sizes = [], []
+    for mask in glyphs:
+        bounds = foreground_bounds(mask)
+        delta = None if bounds is None else bounds - rest_bounds
+        centers.append(None if delta is None else round(float(np.max(np.abs(np.mean(delta, axis=0)))), 2))
+        sizes.append(None if delta is None else round(float(np.max(np.abs(delta[1] - delta[0]))), 2))
+
+    plate = np.stack([
+        np.median(crops[:, top:bottom, left:right], axis=(1, 2))
+        for left, top, right, bottom in spec["plate"]
+    ], axis=1)
+    delta = plate - np.median(plate[-reference_count:], axis=0)
+    luma = delta @ np.array([0.2126, 0.7152, 0.0722])
+    chroma = np.stack((delta[..., 0] - luma, delta[..., 2] - luma), axis=-1)
+    luma_delta = np.max(np.abs(luma), axis=1)
+    chroma_delta = np.max(np.linalg.norm(chroma, axis=-1), axis=1)
+    max_center = max((x for x in centers if x is not None), default=None)
+    max_size = max((x for x in sizes if x is not None), default=None)
+    # Record the largest adjacent source-frame change in any plate sample.
+    steps = np.maximum(
+        np.max(np.abs(np.diff(luma, axis=0)), axis=1) / limits["max_luma_delta"],
+        np.max(np.linalg.norm(np.diff(chroma, axis=0), axis=-1), axis=1) / limits["max_chroma_delta"],
+    )
+    step = int(np.argmax(steps))
+    Image.fromarray(crops[step]).save(output / f"{name}-step-before.png")
+    Image.fromarray(crops[step + 1]).save(output / f"{name}-step-after.png")
+    Image.fromarray(reference).save(output / f"{name}-settled.png")
+    result = {
+        "pass": bool(np.max(luma_delta) <= limits["max_luma_delta"]
+                     and np.max(chroma_delta) <= limits["max_chroma_delta"]
+                     and max_center is not None and max_center <= limits["max_center_delta"]
+                     and max_size is not None and max_size <= limits["max_size_delta"]
+                     and np.min(overlap) >= limits["min_glyph_overlap"]),
+        "metric": spec["metric"],
+        "panel_settled_frame": panel_frame,
+        "landing_reference_frames": [int(frame) for frame in frames[-reference_count:]],
+        "largest_plate_step": [int(frames[step]), int(frames[step + 1])],
+        "max_luma_delta": round(float(np.max(luma_delta)), 2),
+        "max_chroma_delta": round(float(np.max(chroma_delta)), 2),
+        "max_center_delta": max_center,
+        "max_size_delta": max_size,
+        "min_glyph_overlap": round(float(np.min(overlap)), 3),
+        "frames": [
+            {"frame": int(frame), "home_difference": round(float(difference[frame]), 4),
+             "luma_delta": round(float(luma_delta[i]), 2), "chroma_delta": round(float(chroma_delta[i]), 2),
+             "center_delta": centers[i], "size_delta": sizes[i], "glyph_overlap": round(float(overlap[i]), 3)}
+            for i, frame in enumerate(frames)
+        ],
+    }
+    if polarity := spec.get("polarity"):
+        result["polarity"] = check_icon_polarity(video, returning, polarity, settled, output, f"{name}-polarity")
+        result["pass"] = result["pass"] and result["polarity"]["pass"]
+    return result
 
 
 def motion_box(box):
@@ -601,7 +723,11 @@ def capture_scene(emulator, profile, output, work, name, scene, baseline):
             emulator.record(clip, lambda: emulator.touch(*touch), lead_seconds)
             emulator.wait_top(foreground)
             if "metric" in spec:
-                metric = {"stripe_harmonic_ratio": check_blur, "icon_luma_polarity": check_icon_polarity}.get(spec["metric"])
+                metric = {
+                    "stripe_harmonic_ratio": check_blur,
+                    "icon_luma_polarity": check_icon_polarity,
+                    "icon_landing": check_icon_landing,
+                }.get(spec["metric"])
                 if metric is None:
                     raise ValueError(f"Unknown motion metric: {spec['metric']}")
                 settled = rest
@@ -617,7 +743,7 @@ def capture_scene(emulator, profile, output, work, name, scene, baseline):
                 results[key] = result
                 accepted.add(key)  # Retry a missed phase, but keep a measured regression.
                 errors.pop(key, None)
-                summary = {field: value for field, value in result.items() if field != "frames"}
+                summary = {field: value for field, value in result.items() if field not in ("frames", "polarity")}
                 print("PASS" if result["pass"] else "FAIL", key, summary, flush=True)
                 continue
             reference = None

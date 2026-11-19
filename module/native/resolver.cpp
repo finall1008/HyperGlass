@@ -729,6 +729,11 @@ bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolv
   bool widget=known[7]&&known[8]&&config[7]&&config[8]<64;
   for(unsigned i=16;i<=30;i++)widget=widget&&known[i]&&config[i]>0&&config[i]<0x10000;
   if(!snapshot){ready&=~2u;out.diagnostic+="snapshot allocation/layout graph unresolved; ";}
+  for(unsigned slot:{HG_CAPTURE_CLIP_SUPERELLIPSE,HG_CAPTURE_OPACITY,HG_CAPTURE_CLIP_RRECT,HG_CAPTURE_COLOR_FILTER}){
+   if(!known[slot]||config[slot]<=config[0]||config[slot]>=config[15]){
+    ready&=~2u;out.diagnostic+="local icon layer allocation ABI unresolved; ";break;
+   }
+  }
   if(!widget){ready&=~4u;out.diagnostic+="Android container layout unresolved; ";}
   config[HG_CAPTURE_LAYER_SLOT]=uint32_t(scene.layer);
   config[HG_CAPTURE_BOUNDS_SLOT]=uint32_t(scene.bounds);

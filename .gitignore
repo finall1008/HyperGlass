@@ -18,6 +18,7 @@ validation/visual/*
 !validation/visual/scenes.json
 !validation/visual/SetWallpaper.java
 !validation/visual/blur-wallpaper.png
+!validation/visual/clock-landing-wallpaper.png
 !validation/visual/baseline/
 validation/visual/baseline/*
 !validation/visual/baseline/*.png

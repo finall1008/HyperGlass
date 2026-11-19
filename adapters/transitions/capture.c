@@ -9,7 +9,9 @@ __attribute__((section(".capture_config"),used))
 volatile const uint32_t hg_capture_config[HG_CAPTURE_CONFIG_WORDS]={0x140f,0x1421,0x141e,0x141b,0x141f,0x1e11,0x14b,0x21fa,13,(uint32_t)-0x120,0x5b,0xb,0x2b,0xf,0x1f,0x1422,
 0x178b,0x64a,0x64c,0x3b,0x37,0x227,0xab,7,15,11,11,15,15,15,0x1fef,
 [HG_CAPTURE_LAYER_SLOT]=(uint32_t)-0x80,[HG_CAPTURE_BOUNDS_SLOT]=(uint32_t)-0x88,
-[HG_CAPTURE_ROUND_SLOT]=(uint32_t)-0x90,[HG_CAPTURE_VIEW_SLOT]=(uint32_t)-0x98
+[HG_CAPTURE_ROUND_SLOT]=(uint32_t)-0x90,[HG_CAPTURE_VIEW_SLOT]=(uint32_t)-0x98,
+[HG_CAPTURE_CLIP_SUPERELLIPSE]=0x1418,[HG_CAPTURE_OPACITY]=0x141d,
+[HG_CAPTURE_CLIP_RRECT]=0x1419,[HG_CAPTURE_COLOR_FILTER]=0x1416
 };
 #define CFG(n,fallback) hg_capture_config[n]
 #else
@@ -66,12 +68,14 @@ static void dirty_tree(P source,P heap,P nil){
  }
 }
 __attribute__((section(".capture_root"),noinline))
-static int sf_capture(P fp){
+static int sf_capture(P fp,int *shortcut){
  unsigned kind=0;
  for(unsigned i=0;i<80;i++){
   P ret=load(fp+8),parent=load(fp);
   if(ret==(P)scope_close)return 2;
-  if(ret==(P)scope_widget||ret==(P)scope_precreate||ret==(P)scope_current_icon||ret==(P)scope_window_icon||ret==(P)scope_maml_icon||ret==(P)scope_window_maml)kind=1;
+  if(ret==(P)scope_current_icon||ret==(P)scope_window_icon||ret==(P)scope_maml_icon||ret==(P)scope_window_maml){
+   kind=1;*shortcut=1;
+  }else if(ret==(P)scope_widget||ret==(P)scope_precreate)kind=1;
   /* Provider refreshes export a live image without replacing the material
    * saved for an app that is already open. An enclosing flight wins. */
   else if(ret==(P)scope_widget_snapshot&&!kind)kind=3;
@@ -79,16 +83,46 @@ static int sf_capture(P fp){
  }
  return kind;
 }
+/* These containers apply their operations to their own children. Inspect the
+ * whole boundary because a nested backdrop layer still needs the viewport. */
+__attribute__((section(".capture_root"),noinline))
+static int local_boundary(P source,P heap,P nil){
+ if(cid(source)!=CFG(3,0x141b))return 0;
+ P layer=ref(source,0x47,heap);
+ if(layer==nil)return 0;
+ for(unsigned i=0;i<8192;i++){
+  unsigned type=cid(layer);
+  if(type!=CFG(15,0x1422)){
+   if(type!=CFG(3,0x141b)&&type!=CFG(2,0x141e)&&type!=CFG(4,0x141f)
+      &&type!=CFG(HG_CAPTURE_CLIP_SUPERELLIPSE,0x1418)&&type!=CFG(HG_CAPTURE_OPACITY,0x141d)
+      &&type!=CFG(HG_CAPTURE_CLIP_RRECT,0x1419)&&type!=CFG(HG_CAPTURE_COLOR_FILTER,0x1416))return 0;
+   P child=ref(layer,0x47,heap);
+   if(child!=nil){layer=child;continue;}
+  }
+  while(layer!=source){
+   P next=ref(layer,0x37,heap);
+   if(next!=nil){layer=next;break;}
+   layer=ref(layer,0x1f,heap);
+  }
+  if(layer==source)return 1;
+ }
+ return 0;
+}
 __attribute__((section(".capture_root"),noinline))
 static unsigned full_scene(P fp,P data,P bounds,P heap,P nil){
  if(load(fp+8)!=(P)async_scene_return)return 0;
- unsigned kind=sf_capture(fp);
+ int shortcut=0;
+ unsigned kind=sf_capture(fp,&shortcut);
  if(!kind)return 0;
+ P source=load(fp-8);
+ // A self-contained shortcut keeps the alpha of its local scene so SF can
+ // composite it over the destination's live backdrop.
+ if(shortcut&&local_boundary(source,heap,nil))return 0;
  P parent=load(fp);
  P *view_id=(P *)(parent+SLOT(HG_CAPTURE_VIEW_SLOT,-0x98));
  P id=*view_id;
  if(id&1)return 0;
- P source=load(fp-8),root=source,p=source;
+ P root=source,p=source;
  double a=1,b=0,c=0,d=1,x=0,y=0;
  for(unsigned i=0;i<80&&p!=nil;i++){
   unsigned id=cid(p);double aa=1,bb=0,cc=0,dd=1,xx=0,yy=0;

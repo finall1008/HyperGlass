@@ -126,10 +126,15 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
   print('PASS current attached boundaries replace cached/static flight images on both animation paths:',Path(planpath).name,flush=True)
  u=setup();cfg=struct.unpack('<31I',u.mem_read(address(0xb33600),124))
  scene_layer,scene_bounds,scene_round,scene_view=struct.unpack('<4i',u.mem_read(address(0xb33600)+124,16))
+ clip,opacity,rrect,color_filter=struct.unpack('<4I',u.mem_read(address(0xb33600)+140,16))
  scene_return=address(0x191a61c)
  def original_word(pc):return struct.unpack('<I',target.read(pc-base,4))[0]
  assert [scene_layer,scene_bounds,scene_round]==[immediate(original_word(scene_return+offset))for offset in (-16,-12,8)]
- def prepare_scene(u,child,bounds,floor):
+ def prepare_scene(u,child,root,bounds,floor):
+  # RenderView.configuration moved, along with the scene frame slots.
+  view,conf,physical=heap+0x10701,heap+0x10801,heap+0x10901
+  w(u,root+cfg[12],view);w(u,view+cfg[10],conf);w(u,conf+cfg[11],physical)
+  ds(u,physical+cfg[13],[1120]);ds(u,physical+cfg[14],[2436])
   # Poison the reference slots before setting the current launcher layout.
   for offset in range(-0xa8,-0x78,8):q(u,0x2fb000+offset,nil)
   q(u,0x2fb000+scene_layer,child);q(u,0x2fb000+scene_bounds,bounds)
@@ -163,22 +168,14 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
   if hidden:assert u.reg_read(regs[0])==heap+0x3e001
   assert bytes(u.mem_read(heap+0x20000,0x9000))==before,case
  print('PASS native relocated shape background detection; photos, controls, nested panels and provider state retained:',Path(planpath).name,flush=True)
- for kind,scope,floor in [(1,0x19b0dc8,True),(2,0x1b136bc,False),(3,0x199c894,True),
-                         (1,0x19c08e4,False),(1,0x1b15874,True)]:
+ for kind,scope,floor in [(1,0x19b0dc8,True),(2,0x1b136bc,False),(3,0x199c894,True)]:
   u=setup();child,root,data,bounds=ns['scene'](u,floor=floor)
   w(u,child-1,(cfg[3]<<12)|0x500);w(u,root-1,(cfg[2]<<12)|0x700)
   picture=heap+0x13001
   w(u,child+0x47,picture);w(u,picture-1,(cfg[15]<<12)|0x600)
   w(u,picture+0x1f,child);w(u,picture+0x37,nil);w(u,picture+0x47,nil)
   w(u,picture+0x23,nil+0x30)
-  # The real RenderView.configuration field moved from 0x5b to 0x67.
-  qview=heap+0x10701;qconf=heap+0x10801;qphysical=heap+0x10901
-  if cfg[10]!=0x5b:w(u,qview+0x5b,nil)
-  if cfg[11]!=0xb:w(u,qconf+0xb,nil)
-  if cfg[12]!=0x2b:w(u,root+0x2b,nil)
-  w(u,root+cfg[12],qview);w(u,qview+cfg[10],qconf);w(u,qconf+cfg[11],qphysical)
-  ds(u,qphysical+cfg[13],[1120]);ds(u,qphysical+cfg[14],[2436])
-  prepare_scene(u,child,bounds,floor)
+  prepare_scene(u,child,root,bounds,floor)
   q(u,0x2fc008,address(scope))
   # Compiler changed the image local slot in 9226; the gateway must replay it.
   for i in range(32):u.reg_write(getattr(R,f'UC_ARM64_REG_Q{i}'),0x112233445566778899aabbccddeeff00+i)
@@ -207,12 +204,50 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
   assert u.reg_read(R.UC_ARM64_REG_PC)==mark+4 and qi(u,image+15)==171
   assert qi(u,0x2fb000+immediate(original_word(mark)))==image
  print('PASS relocated scene slots, floor/ceil writeback, material stage and current capture scopes:',Path(planpath).name,flush=True)
+ # Both SF routes preserve alpha for plain and child-filtered boundaries.
+ # A material found after visiting a filtered sibling still needs the viewport.
+ open_scopes=(0x19bf198,0x19c08e4)
+ return_scopes=(0x1b1495c,0x1b15874)
+ cases=[(scope,closing,shape)
+        for closing,scopes in ((False,open_scopes),(True,return_scopes))
+        for scope in scopes for shape in ('plain','filtered','material')]
+ for scope,closing,shape in cases:
+  u=setup();child,root,data,bounds=ns['scene'](u)
+  w(u,root-1,(cfg[2]<<12)|0x700)
+  first,second,paint,fade,tint,clip_rect,art=(heap+0x13001+i*0x100 for i in range(7))
+  w(u,child-1,(cfg[3]<<12)|0x500);w(u,child+0x47,first)
+  if shape=='plain':
+   layers=((first,cfg[15],child,second,nil),(second,cfg[15],child,nil,nil))
+  else:
+   layers=(
+    (first,cfg[4],child,second,paint),(paint,cfg[15],first,nil,nil),
+    (second,clip,child,nil,fade),(fade,opacity,second,nil,tint),
+    (tint,color_filter,fade,nil,clip_rect),(clip_rect,rrect,tint,nil,art),
+    (art,cfg[0] if shape=='material' else cfg[15],clip_rect,nil,nil),
+   )
+  for layer,tag,parent,sibling,descendant in layers:
+   w(u,layer-1,(tag<<12)|0x600)
+   w(u,layer+0x1f,parent);w(u,layer+0x37,sibling);w(u,layer+0x47,descendant)
+  prepare_scene(u,child,root,bounds,True)
+  q(u,0x2fc008,address(scope))
+  if closing:q(u,0x2fd008,address(0x1b136bc))
+  original_bounds=bytes(u.mem_read(bounds+7,32))
+  original_transform=bytes(u.mem_read(data+0x17,128))
+  u.emu_start(address(symbols['root_gateway']),address(0xa02918),count=4000000)
+  assert u.reg_read(R.UC_ARM64_REG_PC)==address(0xa02918)
+  if shape=='material':
+   assert qi(u,0x2f9ff8)==root and qi(u,0x2fb000+scene_view)==(2 if closing else 1)<<29
+  else:
+   assert qi(u,0x2f9ff8)==child and qi(u,0x2fb000+scene_view)==0
+   assert bytes(u.mem_read(bounds+7,32))==original_bounds
+   assert bytes(u.mem_read(data+0x17,128))==original_transform
+ print('PASS local shortcut snapshots with child filters and viewport fallback for nested materials:',Path(planpath).name,flush=True)
  # Execute mark, clone and the actual byte-export gateway after compaction.
  u=setup();child,root,data,bounds=ns['scene'](u)
  w(u,child-1,(cfg[3]<<12)|0x500);w(u,root-1,(cfg[2]<<12)|0x700)
  if cfg[10]!=0x5b:w(u,heap+0x10701+0x5b,nil)
  w(u,heap+0x10701+cfg[10],heap+0x10801)
- prepare_scene(u,child,bounds,True);q(u,0x2fc008,address(0x19b0dc8))
+ prepare_scene(u,child,root,bounds,True);q(u,0x2fc008,address(0x19b0dc8))
  u.emu_start(address(symbols['root_gateway']),address(0xa02918),count=4000000)
  image,native,clone=heap+0x11001,heap+0x11101,heap+0x11201
  w(u,image+7,native);q(u,image+15,1120);q(u,image+23,2436);u.reg_write(regs[29],0x2fb000);u.reg_write(regs[0],image)

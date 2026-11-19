@@ -55,6 +55,55 @@
         "limits": {"max_mean": 12, "max_changed_pct": 32}
       }
     },
+    "folder-file-manager": {
+      "page": 1,
+      "enter": [["tap", 823, 1022]],
+      "package": "com.android.fileexplorer",
+      "tap": [846, 600],
+      "return": {
+        "metric": "icon_landing",
+        "box": [365, 246, 481, 354],
+        "glyph": {"box": [22, 24, 94, 83], "min_rgb": 150},
+        "plate": [[29, 16, 83, 25], [17, 42, 23, 70], [92, 38, 100, 70], [35, 84, 81, 93]],
+        "late_difference": 0.035,
+        "settled_difference": 0.003,
+        "max_app_phase": 0.018,
+        "follow_frames": 18,
+        "limits": {
+          "min_frames": 4,
+          "max_luma_delta": 4,
+          "max_chroma_delta": 7,
+          "max_center_delta": 3,
+          "max_size_delta": 4,
+          "min_glyph_overlap": 0.8
+        }
+      }
+    },
+    "folder-panel-clock": {
+      "page": 1,
+      "enter": [["tap", 823, 1022]],
+      "package": "com.android.deskclock",
+      "tap": [560, 898],
+      "wallpaper": "clock-landing-wallpaper.png",
+      "return": {
+        "metric": "icon_landing",
+        "box": [222, 393, 340, 514],
+        "glyph": {"box": [22, 20, 94, 92], "min_rgb": 150, "exclude_center_radius": 26},
+        "plate": [[33, 17, 48, 23], [68, 17, 83, 23], [19, 42, 23, 70], [95, 42, 99, 70], [33, 87, 48, 93], [70, 87, 85, 93]],
+        "late_difference": 0.035,
+        "settled_difference": 0.008,
+        "max_app_phase": 0.018,
+        "follow_frames": 18,
+        "limits": {
+          "min_frames": 4,
+          "max_luma_delta": 4,
+          "max_chroma_delta": 7,
+          "max_center_delta": 3,
+          "max_size_delta": 4,
+          "min_glyph_overlap": 0.7
+        }
+      }
+    },
     "drawer": {
       "page": 1,
       "enter": [["swipe", 560, 2282, 560, 850, 285]],
@@ -140,13 +189,32 @@
       "page": 5,
       "package": "com.android.deskclock",
       "tap": [194, 927],
+      "wallpaper": "clock-landing-wallpaper.png",
       "return": {
-        "metric": "icon_luma_polarity",
-        "box": [65, 431, 129, 495],
-        "radius": 25,
-        "home_difference": [0.025, 0.105],
+        "metric": "icon_landing",
+        "box": [45, 410, 150, 515],
+        "glyph": {"box": [15, 16, 90, 91], "min_rgb": 150, "exclude_center_radius": 26},
+        "plate": [[45, 13, 62, 16], [14, 40, 18, 68], [88, 40, 92, 68], [44, 90, 62, 93]],
+        "late_difference": 0.12,
+        "settled_difference": 0.003,
         "max_app_phase": 0.018,
-        "limits": {"min_frames": 4, "max_luma_delta": 24, "min_polarity": 24}
+        "follow_frames": 18,
+        "limits": {
+          "min_frames": 4,
+          "max_luma_delta": 4,
+          "max_chroma_delta": 7,
+          "max_center_delta": 3,
+          "max_size_delta": 4,
+          "min_glyph_overlap": 0.7
+        },
+        "polarity": {
+          "metric": "icon_luma_polarity",
+          "box": [65, 431, 129, 495],
+          "radius": 25,
+          "home_difference": [0.025, 0.105],
+          "max_app_phase": 0.018,
+          "limits": {"min_frames": 4, "max_luma_delta": 24, "min_polarity": 24}
+        }
       }
     }
   }
