@@ -40,6 +40,10 @@ std::mutex pause_mutex;
 std::condition_variable pause_cv;
 bool worker_inside=false,release_worker=false,callback_returned=false;
 std::atomic<unsigned>guard_calls{0};
+const uint32_t* test_viewport=nullptr;
+float viewport_density=0;
+bool test_capture_queue=false;
+std::vector<bool> scene_updates,scroll_updates;
 }
 extern "C" bool hg_page_guard_ready(){
  if(settings_test)return true;
@@ -57,15 +61,163 @@ extern "C" void hg_install_resources(){assert(false);}
 namespace hg {
 bool image_layout(const char*,std::vector<Elf64_Phdr>&,uint64_t&,std::string&){assert(false);return false;}
 bool resolve_program(const char*,uintptr_t,const Program&,Resolved&,bool){assert(false);return false;}
-uintptr_t adapter_address(const Resolved&,uint32_t){assert(false);return 0;}
+uintptr_t adapter_address(const Resolved&,uint32_t source){assert(test_viewport&&source==hg_programs[0]->config_source);return (uintptr_t)test_viewport;}
 bool install_material_hooks(uintptr_t,const Program&,const Resolved&){assert(false);return false;}
 bool install_backdrop_stream_hooks(){assert(false);return false;}
-void queue_material_target(unsigned,unsigned,unsigned){assert(false);}
+void set_material_density(float density){assert(test_viewport);viewport_density=density;}
+void set_home_material_ready(bool ready){scene_updates.push_back(ready);}
+void set_workspace_scrolling(bool scrolling){scroll_updates.push_back(scrolling);}
+unsigned queue_material_target(unsigned,unsigned,unsigned,const HgCaptureTransform&){assert(test_capture_queue);return 1;}
 uintptr_t image_peer(uintptr_t,uintptr_t){assert(false);return 0;}
 bool crop_export_image(uintptr_t,unsigned,unsigned,unsigned,unsigned){assert(false);return false;}
 }
 int main(){
  using namespace std::chrono_literals;
+ alignas(8) uint8_t viewport[0x1200]{};
+ uintptr_t arena=(uintptr_t)viewport,heap=arena&~uintptr_t(0xffffffff);
+ uintptr_t layer=arena+1,view=arena+0x101,config=arena+0x201,physical=arena+0x301,matrix=arena+0x401,storage=arena+0x501;
+ uint32_t capture[HG_CAPTURE_CONFIG_WORDS]{};
+ capture[2]=0x141e;capture[10]=0x5b;capture[11]=0xb;capture[12]=0x2b;capture[13]=15;capture[14]=31;
+ auto field=[&](uintptr_t address,auto value){memcpy((void*)address,&value,sizeof(value));};
+ field(layer-1,capture[2]<<12);field(layer+0x2b,uint32_t(view));field(view+0x5b,uint32_t(config));
+ field(config+0xb,uint32_t(physical));field(physical+15,1120.0);field(physical+31,2436.0);
+ field(layer+0x53,uint32_t(matrix));field(matrix+7,uint32_t(storage));
+ std::array<double,16> transform{2.85,0,0,0,0,2.85,0,0,0,0,1,0,0,0,0,1};
+ field(storage+0x17,transform);
+ alignas(16) unsigned char bridge[HG_CAPTURE_RESULT_OFFSET+HG_CAPTURE_RESULT_SIZE]{};
+ auto*registers=reinterpret_cast<uintptr_t*>(bridge);registers[1]=layer;registers[15]=10;registers[21]=arena+0x601;registers[27]=heap>>32;
+ test_viewport=capture;export_dispatch(registers);assert(viewport_density==2.85f);
+ field(physical+15,0.0);transform[0]=transform[5]=3;field(storage+0x17,transform);
+ export_dispatch(registers);assert(viewport_density==2.85f);
+ field(physical+15,1120.0);transform[0]=transform[5]=2.85;field(storage+0x17,transform);
+ test_viewport=nullptr;
+ puts("PASS live viewport initializes material density before any marked export and excludes detached layers");
+ const auto signal=arena+1,type=arena+0x101,name=arena+0x201;
+ images[0].result.maml_repaint.string_class=0x73;
+ field(signal+7,uint32_t(type));field(type+0xf,uint32_t(name));
+ field(name-1,uint32_t(0x73<<12));
+ registers[2]=signal;registers[15]=11;
+ auto send_signal=[&](const char*text){
+  auto length=strlen(text);field(name+7,uint32_t(length*2));
+  memcpy((void*)(name+15),text,length);export_dispatch(registers);
+ };
+ for(const char*text:{"openingRemoteAnimationOpen","homeNewIntent","closingRemoteAnimationOpen",
+                      "closingRemoteAnimationClose","exitOverviewState","enterOverviewState","exitOverviewState"}){
+  send_signal(text);
+ }
+ assert(scene_updates==std::vector<bool>({false,false,true,false,true}));
+ // Launching an app from overview invalidates its pending Home recovery.
+ send_signal("enterOverviewState");send_signal("openingRemoteAnimationOpen");send_signal("exitOverviewState");
+ assert(scene_updates==std::vector<bool>({false,false,true,false,true,false,false}));
+ puts("PASS animation signals gate the Home handoff and accept only an entered overview's exit");
+
+ const auto source=arena+0x701,bounds_obj=arena+0x801,child_off=arena+0x901,other_layer=arena+0xa01,
+            other_off=arena+0xb01,zoom_layer=arena+0xc01,zoom_mat=arena+0xd01,zoom_store=arena+0xe01,
+            zoom_child=arena+0xf01;
+ uintptr_t frame[3]={bounds_obj,source,0};
+ registers[28]=reinterpret_cast<uintptr_t>(frame+2);
+ registers[25]=0x1234;
+ field(bounds_obj+7,0.0);field(bounds_obj+15,0.0);field(bounds_obj+23,60.0);field(bounds_obj+31,60.0);
+ field(source+3,uint32_t(1234));
+ double bx=0,by=0;
+ remember_mounted_capture({HgCapturePlacement{10,20,2.85,2.85,60,60,0,1120,2436},
+                           registers[25],source,1234,0,0});
+ prepare_capture(registers,bx,by);assert(capture_result(registers)->placement.x==10);
+ field(source+3,uint32_t(4321));
+ prepare_capture(registers,bx,by);assert(capture_result(registers)->placement.viewport_width==0);
+ frame[1]=arena+0x601;
+ prepare_capture(registers,bx,by);assert(capture_result(registers)->placement.viewport_width==0);
+ frame[1]=source;field(source+3,uint32_t(1234));
+ send_signal("openingRemoteAnimationClose");
+ send_signal("closingRemoteAnimationClose");
+ prepare_capture(registers,bx,by);assert(capture_result(registers)->placement.x==10);
+ puts("PASS detached capture retains matching mounted entries across scene transitions");
+
+ static HgCapturePlacement dispatch_placement{};
+ static uintptr_t dispatch_layer=0,dispatch_view_slot=0;
+ static unsigned dispatch_identity=0,dispatch_kind=1;
+ static uintptr_t dispatch_bounds=0;
+ auto stub_dispatch=[](uintptr_t*r){
+  auto*res=capture_result(r);
+  if(res->placement.viewport_width)return;
+  res->view_slot=&dispatch_view_slot;
+  res->placement=dispatch_placement;
+  res->layer=dispatch_layer;
+  res->identity=dispatch_identity;
+  res->transform=HgCaptureTransform{1,0,0,1,2.85f};
+  double exported[4]={1048576.0+dispatch_placement.x,1048576.0+dispatch_placement.y,
+                      1048576.0+dispatch_placement.x+dispatch_placement.width,
+                      1048576.0+dispatch_placement.y+dispatch_placement.height};
+  memcpy((void*)(dispatch_bounds+7),exported,sizeof(exported));
+  r[15]=dispatch_kind;
+ };
+ test_capture_queue=true;original_dispatch=stub_dispatch;dispatch_bounds=bounds_obj;
+ mounted_captures.clear();resting_layers.clear();
+ dispatch_layer=source;dispatch_identity=1234;dispatch_kind=1;
+ dispatch_placement=HgCapturePlacement{869.0,1656.05,2.85,2.85,60,60,0,1120,2436};
+ registers[15]=0;export_dispatch(registers);
+ assert(mounted_captures.size()==1&&mounted_captures.front().placement.x==869.0);
+ registers[15]=12;
+ registers[2]=registers[21]+0x20;export_dispatch(registers);
+ assert(workspace_scrolling&&mounted_captures.size()==1);
+ dispatch_placement.x=793.0;
+ registers[15]=0;export_dispatch(registers);
+ assert(mounted_captures.size()==1&&mounted_captures.front().placement.x==869.0);
+ registers[15]=12;
+ registers[2]=registers[21];export_dispatch(registers);
+ assert(workspace_scrolling);
+ registers[2]=registers[21]+0x30;export_dispatch(registers);
+ assert(!workspace_scrolling&&scroll_updates==std::vector<bool>({true,false}));
+
+ // Cold page-return: resting snapshot captures unvisited resting layers,
+ // skips zoomed subtrees, and recovers scrolled opening captures.
+ mounted_captures.clear();resting_layers.clear();resting_snapshot_retries=12;
+ capture[0]=0x140f;capture[3]=0x141b;capture[4]=0x141f;capture[15]=0x1422;
+ field(layer-1,(capture[2]<<12)|0x700);
+ field(layer+0x1f,uint32_t(registers[21]));field(layer+0x47,uint32_t(source));
+ field(source-1,(capture[3]<<12)|0x500);field(source+3,uint32_t(0));
+ field(source+0x1f,uint32_t(layer));field(source+0x37,uint32_t(other_layer));
+ field(source+0x47,uint32_t(registers[21]));field(source+0x4f,uint32_t(child_off));
+ field(child_off+7,304.91);field(child_off+15,581.07);
+ field(other_layer-1,(capture[3]<<12)|0x500);field(other_layer+3,uint32_t(555));
+ field(other_layer+0x1f,uint32_t(layer));field(other_layer+0x37,uint32_t(zoom_layer));
+ field(other_layer+0x47,uint32_t(registers[21]));field(other_layer+0x4f,uint32_t(other_off));
+ field(other_off+7,-200.0);field(other_off+15,581.07);
+ field(zoom_layer-1,(capture[2]<<12)|0x700);
+ field(zoom_layer+0x1f,uint32_t(layer));field(zoom_layer+0x37,uint32_t(registers[21]));
+ field(zoom_layer+0x47,uint32_t(zoom_child));field(zoom_layer+0x53,uint32_t(zoom_mat));
+ field(zoom_mat+7,uint32_t(zoom_store));
+ std::array<double,16> zmat{0.9,0,0,0,0,0.9,0,0,0,0,1,0,10,10,0,1};
+ field(zoom_store+0x17,zmat);
+ field(zoom_child-1,(capture[3]<<12)|0x500);field(zoom_child+3,uint32_t(777));
+ field(zoom_child+0x1f,uint32_t(zoom_layer));field(zoom_child+0x37,uint32_t(registers[21]));
+ field(zoom_child+0x47,uint32_t(registers[21]));field(zoom_child+0x4f,uint32_t(other_off));
+ test_viewport=capture;registers[1]=layer;registers[15]=10;
+ export_dispatch(registers);
+ assert(resting_layers.size()==1&&std::abs(resting_layers.front().x-304.91*2.85)<0.01);
+ assert(resting_snapshot_retries==11);
+ field(other_layer+0x37,uint32_t(registers[21]));
+ field(source+3,uint32_t(1234));
+ registers[15]=12;registers[2]=registers[21]+0x20;export_dispatch(registers);
+ field(bounds_obj+7,0.0);field(bounds_obj+15,0.0);
+ dispatch_placement=HgCapturePlacement{793.0,304.91*0+581.07*2.85,2.85,2.85,60,60,0,1120,2436};
+ registers[15]=0;export_dispatch(registers);
+ prepare_capture(registers,bx,by);
+ assert(std::abs(capture_result(registers)->placement.x-304.91*2.85)<0.01&&
+        std::abs(capture_result(registers)->placement.y-581.07*2.85)<0.01);
+
+ // Moving an OffsetLayer at rest updates both caches; viewport resize clears them.
+ registers[15]=12;registers[2]=registers[21]+0x30;export_dispatch(registers);
+ field(child_off+7,120.0);field(child_off+15,240.0);
+ registers[15]=10;export_dispatch(registers);
+ prepare_capture(registers,bx,by);
+ assert(std::abs(capture_result(registers)->placement.x-120.0*2.85)<0.01&&
+        std::abs(capture_result(registers)->placement.y-240.0*2.85)<0.01);
+ field(physical+15,1200.0);
+ export_dispatch(registers);
+ assert(mounted_captures.empty()&&resting_layers.size()<=1);
+ test_viewport=nullptr;original_dispatch=nullptr;test_capture_queue=false;
+ puts("PASS workspace scrolling preserves resting captures, recovers scrolled openings and invalidates on viewport resize");
  // Each child starts with the real runtime's uncached setting. Failed reads
  // must keep the worker pending; storage recovery must install the badge group.
  for(int scenario=0;scenario<6;scenario++){

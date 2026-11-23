@@ -532,6 +532,215 @@ static bool prefer_live_boundary(const ElfImage&image,uintptr_t live,const char*
  diagnostic+=std::string(name)+": current boundary selected over flight bitmap cache; ";return true;
 }
 
+// A return needs the current boundary, even when the existing SF layers have
+// the same source identity. Route that case through the stock release path.
+static bool recapture_return_boundary(const ElfImage&image,uintptr_t live,std::vector<Patch>&patches){
+ auto owners=image.named("SfWindowAnimImplementor.prepareIconLayers");
+ auto reparent=image.named("RustLibApiImpl.crateApiRecentsSfAnimAgentSfAnimAgentReparentIconToHome");
+ auto release=image.named("SfWindowAnimImplementor.releaseIconLayers");
+ auto precreate=image.named("SfWindowAnimImplementor._tryReusePreCreated");
+ auto log=image.named("_LoggerImpl.i");
+ if(owners.size()!=1||reparent.size()!=1||release.size()!=1||precreate.size()!=1||log.size()!=1)return false;
+ const auto&owner=owners.front();uint64_t end=image.symbol_end(owner);
+ auto reparent_calls=direct_calls(image,owner,reparent.front().value);
+ auto precreate_calls=direct_calls(image,owner,precreate.front().value);
+ if(reparent_calls.size()!=1||precreate_calls.size()!=1)return false;
+ uint64_t reuse=reparent_calls.front(),pre=precreate_calls.front();
+ if(reuse+24>=pre||pre+36>=end)return false;
+
+ auto receiver_load=[&](uint64_t pc){
+  return (image.word(pc)&0xff80001f)==0x92800011&&image.word(pc+4)==0xf8716ba1;
+ };
+ auto is_true_branch=[&](uint64_t pc){return (image.word(pc)&0xfff8001f)==0x37200000;};
+ // Reparent is followed by the iterator loop, then the early-return block.
+ if((image.word(reuse+12)&0xfc000000)!=0x14000000||
+    branch_target(image.word(reuse+12),reuse+12)>=reuse)return false;
+ uint64_t release_start=0,guard=0;
+ for(uint64_t call:direct_calls(image,owner,release.front().value)){
+  if(call<=reuse||call+8>=pre||!receiver_load(call-8))continue;
+  for(uint64_t pc=call+4;pc<pre;pc+=4){
+   if(!is_true_branch(pc)||!receiver_load(pc+4))continue;
+   uint64_t next=branch_target(image.word(pc),pc);
+   if(next<=pre||next>=end||pc+20!=pre)continue;
+   if(release_start)return false;
+   release_start=call-8;guard=pc;
+  }
+ }
+ if(!release_start||(image.word(guard-8)&0xff80001f)!=0x92800011||image.word(guard-4)!=0xf8716ba0)return false;
+ uint64_t entry=0;
+ for(uint64_t pc=owner.value;pc+12<reuse;pc+=4){
+  if(!is_true_branch(pc)||!receiver_load(pc+4)||image.word(pc+4)!=image.word(release_start)||
+     (image.word(pc+12)&0xff80001f)!=0x92800011||image.word(pc+16)!=0xf8716ba0)continue;
+  uint64_t exit=branch_target(image.word(pc),pc);
+  if(exit<=reuse+16||exit+16>=release_start)continue;
+  if(entry)return false;
+  entry=pc+4;
+ }
+ if(!entry)return false;
+ uint64_t resume=0;
+ for(uint64_t pc:direct_calls(image,owner,log.front().value)){
+  if(pc<entry+16||pc+8>=reuse||image.word(pc+4)!=image.word(release_start)||
+     image.word(pc+8)!=0xf8716ba2)continue;
+  if(resume)return false;
+  resume=pc+4;
+ }
+ if(!resume)return false;
+ // Use the same opening flag as the press-cache guard. Only a closing
+ // call leaves the reuse block. Opening resumes after its reuse log,
+ // where the stock code reloads the receiver and runs the iterator.
+ uint32_t code[]={image.word(guard-8),image.word(guard-4),0,0};
+ if(!encode_relative(image.word(guard),entry+8,release_start,3,code[2])||
+    !encode_relative(0x14000000,entry+12,resume,1,code[3]))return false;
+ Patch patch{};patch.address=live+entry;patch.size=sizeof(code);patch.group=2;
+ memcpy(patch.original,image.at(entry,sizeof(code)),sizeof(code));
+ memcpy(patch.bytes,code,sizeof(code));patches.push_back(patch);return true;
+}
+
+static bool material_frame_info(const ElfImage&image){
+ auto render=image.named("_ZNK8impeller15MiGlassContents6RenderERKNS_14ContentContextERKNS_6EntityERNS_10RenderPassE");
+ auto bind=image.named("_ZN8impeller25MiGlassV13F16VertexShader13BindFrameInfoERNS_14ResourceBinderENS_10BufferViewE");
+ auto upload=image.named("_ZN8impeller10HostBuffer7EmplaceEPKvmm");
+ if(render.size()!=1||bind.size()!=1||upload.size()!=1)return false;
+ auto calls=direct_calls(image,render.front(),bind.front().value);
+ return calls.size()==2&&std::all_of(calls.begin(),calls.end(),[&](uint64_t pc){
+  return pc>=render.front().value+24&&image.word(pc-24)==0x52801803&&
+         (image.word(pc-12)&0xfc000000)==0x94000000&&
+         branch_target(image.word(pc-12),pc-12)==upload.front().value;
+ });
+}
+
+static bool material_glass_cache(const ElfImage&image){
+ auto get=image.named("_ZN8impeller12MiGlassCache6TryGetERKNS_19MiGlassBlurCacheKeyERKNS_5TRectIfEEPNS0_14BlurCacheEntryEPb");
+ auto tinted=image.named("_ZN8impeller12MiGlassCache12TryGetTintedERKNS_19MiGlassBlurCacheKeyERKNS_17MiGlassTintConfigEjPNSt3_fl10shared_ptrINS_7TextureEEE");
+ auto remove=image.named("_ZN8impeller12MiGlassCache6RemoveERKNS_19MiGlassBlurCacheKeyE");
+ auto query=image.named("_ZN8impeller19MiGlassFilterHelper15QueryGlassCacheEPKN7flutter18DlGlassImageFilterERKNS_14ContentContextERKNS_5TRectIfEENSt3_fl8optionalImEERKNS_19MiGlassBlurCacheKeyERKNS_6MatrixEb");
+ auto draw=image.named("_ZN8impeller6Canvas17DrawHyperMaterialEPKN7flutter13DlImageFilterERKNS_5TRectIfEERKNSt3_fl8optionalIS6_EENSA_IlEENSA_ImEEf");
+ auto acquire=image.named("_ZN8impeller6Canvas24AcquireGlassBlurTexturesEPKN7flutter18DlGlassImageFilterERKNS_5TRectIfEENSt3_fl8optionalImEEfRNS_18MiGlassCacheResultEb");
+ auto find=image.named("_ZNSt3_fl12__hash_tableINS_17__hash_value_typeIN8impeller19MiGlassBlurCacheKeyENS2_12MiGlassCache14BlurCacheEntryEEENS_22__unordered_map_hasherIS3_S6_NS4_16BlurCacheKeyHashENS_8equal_toIS3_EELb1EEENS_21__unordered_map_equalIS3_S6_SA_S8_Lb1EEENS_9allocatorIS6_EEE4findIS3_EENS_15__hash_iteratorIPNS_11__hash_nodeIS6_PvEEEERKT_");
+ if(get.size()!=1||tinted.size()!=1||remove.size()!=1||query.size()!=1||draw.size()!=1||acquire.size()!=1||find.size()!=1)return false;
+ if(direct_calls(image,draw.front(),get.front().value).empty()||
+    direct_calls(image,draw.front(),tinted.front().value).size()!=1||
+    direct_calls(image,acquire.front(),query.front().value).empty()||
+    direct_calls(image,query.front(),get.front().value).size()!=1||
+    direct_calls(image,query.front(),remove.front().value).empty()||
+    direct_calls(image,remove.front(),find.front().value).empty())return false;
+ auto lookups=direct_calls(image,get.front(),find.front().value);
+ if(lookups.size()!=1)return false;
+
+ // The hash table reads the five key fields through x2. Register
+ // destinations and load ordering can vary without changing the layout.
+ bool mode=false,backdrop=false,pass_blur=false,radii=false;
+ const auto&lookup=find.front();
+ for(uint64_t pc=lookup.value,end=pc+std::min<uint64_t>(lookup.size,24*4);pc+4<=end;pc+=4){
+  uint32_t word=image.word(pc),opcode=word&0xffc003e0;
+  int64_t offset=instruction_immediate(word);
+  mode|=opcode==0xb9800040&&offset==0;
+  backdrop|=opcode==0xf9400040&&offset==8;
+  pass_blur|=opcode==0x39400040&&offset==0x10;
+  radii|=opcode==0x69400040&&offset==0x14;
+ }
+ if(!mode||!backdrop||!pass_blur||!radii)return false;
+
+ // TryGet clears its optional bool before looking up the key. Accept an
+ // x4 alias and intervening instructions between the null check and store.
+ uint32_t out_registers=1u<<4;
+ uint64_t null_exit=0;
+ for(uint64_t pc=get.front().value,end=std::min(lookups.front(),pc+24*4);pc<end;pc+=4){
+  uint32_t word=image.word(pc);
+  if((word&0xffe0ffe0)==0xaa0003e0&&(out_registers&(1u<<((word>>16)&31))))
+   out_registers|=1u<<(word&31);
+  if((word&0xff000000)==0xb4000000&&(out_registers&(1u<<(word&31))))
+   null_exit=branch_target(word,pc);
+  if((word&0xfffffc1f)==0x3900001f&&(out_registers&(1u<<((word>>5)&31)))&&pc<null_exit&&null_exit<=end)
+   return true;
+ }
+ return false;
+}
+
+static bool capture_layer_hash_abi(const ElfImage&image){
+ auto hashes=image.named("_getHash");
+ if(hashes.size()!=1)return false;
+ // The native bridge invokes this Dart leaf with x15 and x26 prepared.
+ // Verify the entire leaf, including the in-object atomic hash update, so
+ // there can be no call or safepoint on the temporary native stack.
+ const uint32_t leaf[]={
+  0xf94001e0,0xb8403000,0xb4000060,0xd37ff800,0xd65f03c0,
+  0xf9445b41,0x92407c22,0xd360fc23,0xd29b4c21,0xf2bfffe1,
+  0x9b027c21,0x8b030021,0xf9045b41,0x92407421,0xb4fffee1,
+  0xf94001e0,0xd1000400,0xd3607c23,0xc85f7c02,0xd360fc44,
+  0xb50000c4,0xaa030042,0xc8047c02,0xb5ffff64,0xd37ff820,
+  0xd65f03c0,0xd5033f5f,0xd37ff880,0xd65f03c0,
+ };
+ const auto*code=image.at(hashes.front().value,sizeof(leaf));
+ return code&&image.symbol_end(hashes.front())>=hashes.front().value+sizeof(leaf)&&
+        !memcmp(code,leaf,sizeof(leaf));
+}
+
+static bool plan_material_scroll(const ElfImage&image,uintptr_t live,uintptr_t adapter,std::vector<Patch>&patches){
+ auto workspace=image.named("WorkspaceGetxController._folderClingController");
+ auto scrolling=image.named("MamlVisibilitySignals.setScrolling");
+ auto set_value=image.named("RxObjectMixin.value=");
+ auto position=image.named("_PagePosition.page");
+ if(workspace.size()!=1||scrolling.size()!=1||set_value.empty()||position.size()!=1)return false;
+ // The compiler emits the anonymous page listener in the gap after this
+ // named getter. Qualify the listener using its page-position call.
+ auto listener=workspace.front();
+ const uint64_t end=image.symbol_end(listener);
+ listener.value+=listener.size;
+ if(listener.value>=end||image.word(listener.value)!=0xa9bf79fd)return false;
+ listener.size=end-listener.value;
+ auto calls=direct_calls(image,listener,scrolling.front().value);
+ auto page_calls=direct_calls(image,listener,position.front().value);
+ if(calls.size()!=1||page_calls.empty()||page_calls.front()>=calls.front())return false;
+ const uint64_t call=calls.front(),entry=scrolling.front().value;
+ // The workspace selects a canonical bool from the page-position
+ // comparison, spills it, and reloads the same value in argument x2.
+ if(call<listener.value+56||image.word(call-56)!=0x910082d0||
+    image.word(call-52)!=0x9100c2d1||image.word(call-48)!=0x9a91c202||
+    image.word(call-44)!=0xf81f03a2||image.word(call-4)!=0xf85f03a2)return false;
+ const uint32_t setter=image.word(entry+84);
+ const bool sets_value=(setter&0xfc000000)==0x94000000&&
+  std::any_of(set_value.begin(),set_value.end(),[&](const Symbol&symbol){
+   return symbol.value==branch_target(setter,entry+84);
+  });
+ return sets_value&&image.word(entry+20)==0xf81e83a2&&
+        image.word(entry+48)==0xf85e83a0&&image.word(entry+80)==0xaa0003e2&&
+        image.word(entry+88)==0xf85e83a0&&
+        (image.word(entry+92)&0xfff8001f)==0x36200000&&
+        add_widget_branch(image,live,call,adapter,2,true,patches);
+}
+
+static bool plan_material_scene(const ElfImage&image,uintptr_t live,uintptr_t adapter,std::vector<Patch>&patches){
+ auto detector=image.named("SceneTransitionDetector.detectSceneTransition");
+ auto sender=image.named("SceneAnimationSignalManager.sendSignal");
+ auto processor=image.named("SceneAnimationSignalManager._processSignal");
+ auto names=image.named("SceneAnimationSignalType._enumToString");
+ if(detector.size()!=1||sender.size()!=1||processor.size()!=1||names.size()!=1)return false;
+ auto calls=direct_calls(image,detector.front(),sender.front().value);
+ if(calls.size()!=1)return false;
+ const auto start=detector.front().value,call=calls.front();
+ // The detector moves the animation signal from x3 to the sender's x2.
+ if(call!=start+44||image.word(start+8)!=0xaa0303f0||
+    image.word(start+12)!=0xaa0203e3||image.word(start+16)!=0xaa1003e2||
+    image.word(call-4)!=0xaa0003e1)return false;
+ auto process_calls=direct_calls(image,sender.front(),processor.front().value);
+ const auto send=sender.front().value,process=processor.front().value;
+ // The sender forwards x2. The processor loads signal.type before
+ // interpolating the enum's name.
+ if(process_calls.size()!=1||image.word(send+16)!=0xf81f03a2||
+    image.word(process+12)!=0xf81a83a2||image.word(process+0x50)!=0xf85a83a5||
+    image.word(process+0x54)!=0xb84070a6||image.word(process+0x58)!=0x8b1c80c6||
+    image.word(process_calls.front()-16)!=0xb840f002||
+    image.word(process_calls.front()-12)!=0x8b1c8042)return false;
+ // Check the compressed enum-name load used by the original interpolation.
+ unsigned name_loads=0;
+ const auto&name=names.front();
+ for(uint64_t pc=name.value;pc+12<=image.symbol_end(name);pc+=4)
+  if(image.word(pc)==0xb840f022&&image.word(pc+4)==0x8b1c8042&&image.word(pc+8)==0xb8013002)
+   ++name_loads;
+ return name_loads==1&&add_widget_branch(image,live,call,adapter,2,true,patches);
+}
+
 static bool plan_maml_repaint(const ElfImage&image,uintptr_t live,uintptr_t adapter,Resolved&out){
  auto keys=image.named("MamlIconCache.getGlobalKeyForTag");
  auto elements=image.named("GlobalKey._currentElement");
@@ -748,16 +957,38 @@ bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolv
  if(!(ready&4))ready&=~uint32_t(HG_WIDGET_MONOCHROME);
  if((ready&4)&&program.widget_wrap&&!image.named("DensitySemantics.layoutDensity").empty()&&
     !plan_widget_layout_density(image,live,out.patches))out.diagnostic+="Android widget layout-density conversion unresolved; ";
+ if((ready&2)&&!strcmp(program.image,"libhyper_os_flutter.so")){
+  if(!material_frame_info(image)){
+   ready&=~2u;out.diagnostic+="material screen-transform FrameInfo ABI unresolved; ";
+  }
+  if(!material_glass_cache(image)){
+   ready&=~2u;out.diagnostic+="material glass cache ABI unresolved; ";
+  }
+ }
  if((ready&2)&&!strcmp(program.image,"libapp.so")){
+  if(!capture_layer_hash_abi(image)){
+   ready&=~2u;out.diagnostic+="detached capture layer identity ABI unresolved; ";
+  }
+  if(!recapture_return_boundary(image,live,out.patches)){
+   ready&=~2u;out.diagnostic+="SF return reuse and release flow unresolved; ";
+  }
   for(const char*name:{"SfAnimIconCapture._buildLayersFromIconInfo","SfWindowAnimImplementor.prepareIconLayers"})if(!prefer_live_boundary(image,live,name,out.patches,out.diagnostic)){
    ready&=~2u;out.diagnostic+="live icon boundary cache guard unresolved; ";break;
   }
   if(ready&2){
-   uintptr_t repaint=0;
-   for(size_t i=0;i<program.unit_count;i++)if(!strcmp(program.units[i].label,".maml_repaint"))
-    repaint=adapter_address(out,program.units[i].source);
+   uintptr_t repaint=0,material_scene=0,material_scroll=0;
+   for(size_t i=0;i<program.unit_count;i++){
+    const auto&unit=program.units[i];
+    if(!strcmp(unit.label,".maml_repaint"))repaint=adapter_address(out,unit.source);
+    if(!strcmp(unit.label,".material_scene"))material_scene=adapter_address(out,unit.source);
+    if(!strcmp(unit.label,".material_scroll"))material_scroll=adapter_address(out,unit.source);
+   }
    if(!repaint||!plan_maml_repaint(image,live,repaint,out)){
     ready&=~2u;out.diagnostic+="MAML repaint registry or SF capture ABI unresolved; ";
+   }else if(!material_scene||!plan_material_scene(image,live,material_scene,out.patches)){
+    ready&=~2u;out.diagnostic+="material scene signal ABI unresolved; ";
+   }else if(!material_scroll||!plan_material_scroll(image,live,material_scroll,out.patches)){
+    ready&=~2u;out.diagnostic+="workspace scroll signal ABI unresolved; ";
    }
   }
  }

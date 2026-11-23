@@ -1,8 +1,9 @@
+#include "capture_layout.h"
 .section .bridge,"ax"
 .global capture_bridge
 .type capture_bridge,%function
 capture_bridge:
- sub x15,x15,#784
+ sub x15,x15,#(HG_CAPTURE_RESULT_OFFSET+HG_CAPTURE_RESULT_SIZE)
  stp x0,x1,[x15,#0]
  stp x2,x3,[x15,#16]
  stp x4,x5,[x15,#32]
@@ -79,5 +80,22 @@ capture_bridge:
  ldp x25,x26,[x15,#192]
  ldp x27,x28,[x15,#208]
  ldp x29,x30,[x15,#224]
- add x15,x15,#784
+ add x15,x15,#(HG_CAPTURE_RESULT_OFFSET+HG_CAPTURE_RESULT_SIZE)
  ret
+
+#ifdef HG_ADAPTIVE
+.section .detached_capture,"ax"
+.global capture_layer_identity
+.type capture_layer_identity,%function
+capture_layer_identity:
+ // _getHash is a Dart leaf. It reads the tagged receiver from x15 and
+ // initializes its stable identity hash using the current Dart thread.
+ stp x26,x30,[sp,#-32]!
+ str x0,[sp,#16]
+ add x15,sp,#16
+ mov x26,x1
+ bl dart_layer_hash
+ lsr x0,x0,#1
+ ldp x26,x30,[sp],#32
+ ret
+#endif

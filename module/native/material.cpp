@@ -1,7 +1,9 @@
 #include "material.h"
 #include "runtime.h"
+#include <chrono>
 #include <android/hardware_buffer.h>
 #include <android/log.h>
+#include <algorithm>
 #include <atomic>
 #include <array>
 #include <cstdio>
@@ -10,7 +12,9 @@
 #include <memory>
 #include <mutex>
 #include <cmath>
-#include <deque>
+#include <optional>
+#include <utility>
+#include <vector>
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO,"HyperGlass",__VA_ARGS__)
 namespace hg {
 namespace {
@@ -22,39 +26,163 @@ void released(NativeRef p){if(p.owner&&__atomic_fetch_sub((int64_t*)(p.owner+8),
 struct ReturnRef {NativeRef value;~ReturnRef(){released(value);}};
 NativeRef clone_texture(uintptr_t,NativeRef,const int64_t*);
 struct GlassKey {
- uintptr_t context;uint64_t view;std::array<int64_t,8>geometry;
+ uintptr_t context;uint64_t view;std::array<int64_t,7>geometry;
  bool operator<(const GlassKey&o)const{return std::tie(context,view,geometry)<std::tie(o.context,o.view,o.geometry);}
 };
 struct SavedTexture {NativeRef texture;const void*slot;uint32_t stage,type;~SavedTexture(){released(texture);}};
-std::mutex glass_mutex;std::map<GlassKey,std::shared_ptr<SavedTexture>>opening_textures;
-struct SavedUniform {uint64_t binding;uint32_t type;std::vector<uint8_t>bytes;};
-std::map<GlassKey,SavedUniform>opening_uniforms;
-thread_local const GlassKey*active_draw=nullptr;thread_local unsigned uniform_index=0,texture_index=0;
-void begin_glass_export(unsigned kind){if(kind==1){std::lock_guard<std::mutex>lock(glass_mutex);opening_uniforms.clear();opening_textures.clear();}}
-void freeze_material_inputs();
+using Clock=std::chrono::steady_clock;
 struct HomeMaterial {
- NativeRef texture,keeper;uintptr_t generation=0;uint64_t stamp=0;bool locked=false;
- ~HomeMaterial(){released(texture);released(keeper);}
+ NativeRef texture;
+ uintptr_t generation=0;
+ uint64_t stamp=0;
+ uint32_t scene_epoch=0;
+ Clock::time_point resting_since{},last_resting{};
+ ~HomeMaterial(){released(texture);}
 };
-std::mutex material_mutex;std::map<uintptr_t,HomeMaterial>materials;thread_local unsigned export_kind=0;uint64_t material_stamp=0;
-struct Target {unsigned kind,x,y;};std::mutex targets_mutex;std::deque<Target>targets;
-thread_local unsigned target_x=0,target_y=0;thread_local bool has_target=false;
-thread_local NativeRef export_context;thread_local uint32_t export_width=0,export_height=0;
+std::mutex material_mutex;
+std::map<uintptr_t,HomeMaterial>materials;
+uint64_t material_stamp=0;
+std::atomic<float> display_density{0};
+constexpr uint32_t scene_ready=1,workspace_scrolling=2,scene_flags=3;
+// The upper bits version the scene and workspace state together.
+std::atomic<uint32_t> home_scene_epoch{scene_ready};
+
+struct MaterialTarget {
+ unsigned kind=0,x=0,y=0;
+ HgCaptureTransform transform;
+};
+constexpr uintptr_t view_mask=(uintptr_t{1}<<HG_CAPTURE_VIEW_BITS)-1;
+constexpr unsigned ticket_mask=(1u<<HG_CAPTURE_TICKET_BITS)-1;
+std::mutex targets_mutex;
+std::map<unsigned,MaterialTarget>targets;
+unsigned target_sequence=0;
+std::optional<MaterialTarget> take_target(unsigned ticket,unsigned kind){
+ std::lock_guard<std::mutex>lock(targets_mutex);
+ auto item=targets.extract(ticket);
+ if(item.empty()||item.mapped().kind!=kind)return {};
+ return item.mapped();
+}
+
+struct CaptureInputs {
+ std::map<unsigned,std::unique_ptr<SavedTexture>> textures;
+ std::optional<GlassKey> target;
+ uintptr_t generation=0;
+ uintptr_t context=0;
+};
+std::mutex glass_mutex;
+std::map<GlassKey,CaptureInputs> opening_inputs;
+thread_local std::optional<MaterialTarget> export_target;
+thread_local CaptureInputs* export_inputs=nullptr;
+struct BackdropSelection {uintptr_t context,generation;};
+thread_local std::optional<BackdropSelection> export_home;
+thread_local unsigned export_kind=0;
+thread_local NativeRef export_context;
+thread_local uint32_t export_width=0,export_height=0;
+struct MaterialDraw {
+ const float*rect;
+ bool selected,texture_capture;
+ unsigned texture_index=0;
+ std::optional<bool> resting;
+};
+thread_local MaterialDraw* active_draw=nullptr;
+struct BlurCacheKey {
+ alignas(8) uint8_t bytes[32]{};
+};
+static_assert(sizeof(BlurCacheKey)==32&&alignof(BlurCacheKey)==8);
+BlurCacheKey normalize_blur_key(const void*raw){
+ BlurCacheKey key;
+ const auto*src=static_cast<const uint8_t*>(raw);
+ memcpy(key.bytes,src,4);            // layer mode
+ memcpy(key.bytes+8,src+8,8);        // backdrop ID
+ memcpy(key.bytes+0x10,src+0x10,1);  // use PassBlur
+ memcpy(key.bytes+0x14,src+0x14,8);  // horizontal and vertical radii
+ return key;
+}
+struct ExportPin {
+ bool active=false;
+ uintptr_t context=0,state=0;
+ NativeRef saved_texture{},saved_keeper{};
+ uintptr_t saved_generation=0,saved_factory=0;
+ std::vector<std::pair<uintptr_t,BlurCacheKey>> touched_cache_keys;
+};
+thread_local ExportPin* active_pin=nullptr;
+using CacheTryGet=bool(*)(uintptr_t,const void*,const void*,void*,bool*);
+using CacheTryGetTinted=bool(*)(uintptr_t,const void*,const void*,uint32_t,void*);
+using CacheRemove=void(*)(uintptr_t,const void*);
+CacheTryGet original_try_get=nullptr;
+CacheTryGetTinted original_try_get_tinted=nullptr;
+CacheRemove cache_remove=nullptr;
+
+bool material_try_get(uintptr_t cache,const void*key,const void*rect,void*entry,bool*found){
+ if(export_kind==2&&active_pin&&active_pin->active&&key){
+  const bool target=active_draw&&active_draw->selected;
+  if(target){
+   if(found)*found=false;
+  }else if(original_try_get(cache,key,rect,entry,found))return true;
+  auto normalized=normalize_blur_key(key);
+  auto&keys=active_pin->touched_cache_keys;
+  auto same_key=[&](const auto&item){
+   return item.first==cache&&!memcmp(item.second.bytes,normalized.bytes,sizeof(normalized.bytes));
+  };
+  if(std::none_of(keys.begin(),keys.end(),same_key))keys.emplace_back(cache,normalized);
+  return false;
+ }
+ return original_try_get(cache,key,rect,entry,found);
+}
+bool material_try_get_tinted(uintptr_t cache,const void*key,const void*tint,uint32_t hash,void*out){
+ if(export_kind==2&&active_pin&&active_pin->active&&active_draw&&active_draw->selected)return false;
+ return original_try_get_tinted(cache,key,tint,hash,out);
+}
+void finish_export_home_pin(ExportPin&pin){
+ if(!pin.active)return;
+ // Flush the export's blur entries and their tinted textures before
+ // returning the context to its live PassBlur state.
+ if(cache_remove)for(const auto&[cache,key]:pin.touched_cache_keys)cache_remove(cache,key.bytes);
+ std::swap(*(NativeRef*)pin.state,pin.saved_texture);
+ std::swap(*(NativeRef*)(pin.state+0x70),pin.saved_keeper);
+ *(uintptr_t*)(pin.state+0x18)=pin.saved_generation;
+ *(uintptr_t*)(pin.state+0x60)=pin.saved_factory;
+ pin.active=false;
+ released(pin.saved_texture);
+ released(pin.saved_keeper);
+}
+
+void freeze_material_inputs(CaptureInputs&inputs);
 using Raster=void(*)(uintptr_t);Raster original_raster=nullptr;
 void material_raster(uintptr_t closure){
- uintptr_t block=*(uintptr_t*)(closure+8),&view=*(uintptr_t*)(block+0x48);unsigned previous=export_kind;
- NativeRef previous_context=export_context;uint32_t previous_width=export_width,previous_height=export_height;export_context={};
- unsigned previous_x=target_x,previous_y=target_y;bool previous_target=has_target;
+ uintptr_t block=*(uintptr_t*)(closure+8),&view=*(uintptr_t*)(block+0x48);
+ unsigned previous_kind=export_kind;
+ auto previous_target=export_target;
+ auto*previous_inputs=export_inputs;
+ auto previous_home=export_home;
+ auto*previous_pin=active_pin;
+ NativeRef previous_context=export_context;uint32_t previous_width=export_width,previous_height=export_height;
+ export_context={};export_home.reset();export_target.reset();export_inputs=nullptr;
  export_width=*(uint32_t*)(block+0x30);export_height=*(uint32_t*)(block+0x34);
  export_kind=(view>>28)&3;
- has_target=false;if(export_kind){std::lock_guard<std::mutex>lock(targets_mutex);if(!targets.empty()){auto target=targets.front();targets.pop_front();if(target.kind==export_kind){target_x=target.x;target_y=target.y;has_target=true;}}}
- view&=~uintptr_t((1u<<29)|(1u<<28));
- begin_glass_export(export_kind);
- if(export_kind==1){std::lock_guard<std::mutex>lock(material_mutex);for(auto&entry:materials)entry.second.locked=true;}
+ ExportPin pin;
+ active_pin=export_kind==2?&pin:nullptr;
+ CaptureInputs inputs;
+ if(export_kind){
+  export_target=take_target((view>>HG_CAPTURE_VIEW_BITS)&ticket_mask,export_kind);
+  view&=view_mask;
+ }
+ if(export_target&&(export_kind==1||export_kind==2))export_inputs=&inputs;
  original_raster(closure);
- if(export_kind==1)freeze_material_inputs();
- if(export_kind==2){std::lock_guard<std::mutex>lock(material_mutex);for(auto&entry:materials)entry.second.locked=false;}
- released(export_context);export_context=previous_context;export_width=previous_width;export_height=previous_height;export_kind=previous;target_x=previous_x;target_y=previous_y;has_target=previous_target;
+ finish_export_home_pin(pin);
+ active_pin=previous_pin;
+ if(export_kind==1&&export_inputs&&!inputs.textures.empty()){
+  freeze_material_inputs(inputs);
+  if(!inputs.textures.empty()){
+   std::lock_guard<std::mutex>lock(glass_mutex);
+   if(opening_inputs.size()>=8)opening_inputs.erase(opening_inputs.begin());
+   auto key=*inputs.target;
+   opening_inputs.insert_or_assign(key,std::move(inputs));
+  }
+ }
+ released(export_context);
+ export_context=previous_context;export_width=previous_width;export_height=previous_height;
+ export_kind=previous_kind;export_target=previous_target;export_inputs=previous_inputs;export_home=previous_home;
 }
 using CreateTexture=void(*)(NativeRef*,uintptr_t,const void*,bool);CreateTexture create_texture=nullptr;
 using CreateBlit=void(*)(NativeRef*,uintptr_t);CreateBlit create_blit=nullptr;
@@ -81,57 +209,172 @@ NativeRef clone_texture(uintptr_t context,NativeRef source,const int64_t*crop=nu
  if(!ok){released(copy);return {};}
  return copy;
 }
-void freeze_material_inputs(){
- std::lock_guard<std::mutex>lock(glass_mutex);std::map<std::pair<uintptr_t,uintptr_t>,NativeRef>copies;bool ok=true;
- // Render/cache producers have submitted their commands at this point. A
- // separate copy inside their active pass can run ahead of the producer.
- for(auto&entry:opening_textures){auto&source=entry.second->texture;auto key=std::make_pair(source.object,source.owner);auto found=copies.find(key);
-  NativeRef copy=found==copies.end()?clone_texture(entry.first.context,source):retained(found->second);
-  if(!copy.object){ok=false;break;}copies[key]=copy;released(source);source=copy;
+void freeze_material_inputs(CaptureInputs&inputs){
+ std::map<std::pair<uintptr_t,uintptr_t>,NativeRef>copies;
+ // Render/cache producers have submitted their commands at this point.
+ for(auto&entry:inputs.textures){
+  auto&source=entry.second->texture;
+  auto key=std::make_pair(source.object,source.owner);auto found=copies.find(key);
+  NativeRef copy=found==copies.end()?clone_texture(inputs.target->context,source):retained(found->second);
+  if(!copy.object){inputs.textures.clear();return;}
+  copies[key]=copy;released(source);source=copy;
  }
- if(!ok){opening_textures.clear();opening_uniforms.clear();}
+}
+uintptr_t blur_state(uintptr_t context){
+ uintptr_t backend=*(uintptr_t*)(context+8);
+ return backend?*(uintptr_t*)(backend+0x10):0;
+}
+void ensure_export_home_pinned(uintptr_t context){
+ if(export_kind!=2||!active_pin||active_pin->active)return;
+ auto&pin=*active_pin;
+ uintptr_t generation=0;
+ {
+  std::lock_guard<std::mutex>lock(material_mutex);
+  uintptr_t state=blur_state(context);
+  auto item=materials.find(context);
+  if(!state||item==materials.end()||!item->second.texture.object)return;
+  auto&home=item->second;
+  home.resting_since={};
+  home.last_resting={};
+  generation=home.generation;
+  pin.saved_texture=retained(home.texture);
+  pin.state=state;
+ }
+ export_home=BackdropSelection{context,generation};
+ auto&live_generation=*(uintptr_t*)(pin.state+0x18);
+ auto&factory=*(uintptr_t*)(pin.state+0x60);
+ std::swap(*(NativeRef*)pin.state,pin.saved_texture);
+ std::swap(*(NativeRef*)(pin.state+0x70),pin.saved_keeper);
+ pin.saved_generation=std::exchange(live_generation,generation);
+ pin.saved_factory=std::exchange(factory,0);
+ pin.context=context;
+ pin.active=true;
 }
 using Acquire=bool(*)(uintptr_t,const void*,const void*,uint64_t,uint64_t,float,void*,bool);Acquire original_acquire=nullptr;
 bool material_acquire(uintptr_t canvas,const void*filter,const void*rect,uint64_t view,uint64_t has_view,float scale,void*result,bool flag){
- std::lock_guard<std::mutex>lock(material_mutex);uintptr_t context=**(uintptr_t**)canvas,backend=*(uintptr_t*)(context+8),state=backend?*(uintptr_t*)(backend+0x10):0;
+ uintptr_t context=**(uintptr_t**)canvas;
  if(export_kind&&!export_context.object)export_context=retained(*(NativeRef*)*(uintptr_t*)canvas);
- if(!state)return original_acquire(canvas,filter,rect,view,has_view,scale,result,flag);
- if(materials.find(context)==materials.end()&&materials.size()>=8){auto oldest=materials.begin();for(auto it=materials.begin();it!=materials.end();++it)if(it->second.stamp<oldest->second.stamp)oldest=it;materials.erase(oldest);}
- auto&home=materials[context];home.stamp=++material_stamp;auto&texture=*(NativeRef*)state;auto&keeper=*(NativeRef*)(state+0x70);auto&generation=*(uintptr_t*)(state+0x18);auto&factory=*(uintptr_t*)(state+0x60);
- if(export_kind==1)home.locked=true;
- bool pinned=export_kind==2&&home.texture.object;uintptr_t saved_generation=generation,saved_factory=factory;
- if(pinned){std::swap(texture,home.texture);std::swap(keeper,home.keeper);generation=home.generation;factory=0;}
+ ensure_export_home_pinned(context);
  bool ok=original_acquire(canvas,filter,rect,view,has_view,scale,result,flag);
- if(pinned){std::swap(texture,home.texture);std::swap(keeper,home.keeper);generation=saved_generation;factory=saved_factory;}
- // Keep the last displayed home frame. Opening exports can consume the
- // transition's next AHB even when their visible cache still shows home.
- if(!pinned&&texture.object&&(!home.texture.object||(!export_kind&&!home.locked&&home.generation!=generation))){
-  NativeRef cloned=clone_texture(context,texture);if(cloned.object){released(home.texture);released(home.keeper);home.texture=cloned;home.keeper={};home.generation=generation;}
+ if(export_kind==1&&export_inputs){
+  std::lock_guard<std::mutex>lock(material_mutex);
+  uintptr_t state=blur_state(context);
+  auto item=materials.find(context);
+  uintptr_t generation=state?*(uintptr_t*)(state+0x18):0;
+  if(state&&item!=materials.end()&&item->second.texture.object&&
+     export_target->transform.scale==1&&generation==item->second.generation){
+   export_inputs->context=context;
+   export_inputs->generation=generation;
+  }else{
+   export_inputs->context=0;
+   export_inputs->textures.clear();
+  }
  }
  return ok;
+}
+void observe_home(uintptr_t context,bool resting,Clock::time_point now){
+ const auto epoch=home_scene_epoch.load(std::memory_order_relaxed);
+ if((epoch&scene_flags)!=scene_ready)return;
+ uintptr_t state=blur_state(context);
+ if(!state)return;
+ std::lock_guard<std::mutex>lock(material_mutex);
+ auto item=materials.find(context);
+ if(item==materials.end()){
+  if(!resting)return;
+  if(materials.size()>=8){
+   auto oldest=materials.begin();
+   for(auto it=materials.begin();it!=materials.end();++it)if(it->second.stamp<oldest->second.stamp)oldest=it;
+   materials.erase(oldest);
+  }
+  item=materials.try_emplace(context).first;
+ }
+ auto&home=item->second;home.stamp=++material_stamp;
+ if(!resting){home.resting_since={};home.last_resting={};return;}
+ constexpr auto settling=std::chrono::milliseconds(48);
+ const bool settled=home.last_resting-home.resting_since>=settling;
+ // A confirmed Home scene can be idle until a wallpaper buffer arrives.
+ // Gaps still reset qualification for a scene that has yet to settle.
+ if(home.scene_epoch!=epoch||home.resting_since==Clock::time_point{}||
+    (!settled&&now-home.last_resting>std::chrono::milliseconds(100)))
+  home.resting_since=now;
+ home.scene_epoch=epoch;
+ home.last_resting=now;
+ // Isolated full-scale frames around the start of a return do not qualify.
+ if(now-home.resting_since<settling)return;
+ const auto&texture=*(const NativeRef*)state;
+ uintptr_t generation=*(const uintptr_t*)(state+0x18);
+ if(!texture.object||(home.texture.object&&home.generation==generation))return;
+ NativeRef cloned=clone_texture(context,texture);
+ if(cloned.object){
+  if(home_scene_epoch.load(std::memory_order_relaxed)!=epoch){released(cloned);return;}
+  released(home.texture);home.texture=cloned;home.generation=generation;
+  std::lock_guard<std::mutex> lock(glass_mutex);
+  for(auto it=opening_inputs.begin();it!=opening_inputs.end();){
+   if(it->first.context==context&&it->second.generation!=generation)it=opening_inputs.erase(it);
+   else ++it;
+  }
+ }
 }
 using DrawMaterial=bool(*)(uintptr_t,const void*,const void*,const void*,uint64_t,uint64_t,uint64_t,uint64_t,float);
 DrawMaterial original_draw=nullptr;
 using BindTexture=bool(*)(uintptr_t,uint32_t,uint32_t,const void*,const void*,NativeRef*,uintptr_t);BindTexture original_bind=nullptr;
 bool material_bind(uintptr_t pass,uint32_t stage,uint32_t type,const void*slot,const void*metadata,NativeRef*texture,uintptr_t sampler){
- std::shared_ptr<SavedTexture>saved;
- if((export_kind==1||export_kind==2)&&active_draw&&texture->object){GlassKey key=*active_draw;key.geometry[7]=texture_index++;
-  // Retain the producer through submission; freeze it after the raster task.
-  if(export_kind==1){auto copy=retained(*texture);if(copy.object){saved=std::make_shared<SavedTexture>();saved->texture=copy;saved->slot=slot;saved->stage=stage;saved->type=type;std::lock_guard<std::mutex>lock(glass_mutex);opening_textures[key]=saved;}}
-  else{std::lock_guard<std::mutex>lock(glass_mutex);auto at=opening_textures.find(key);if(at!=opening_textures.end())saved=at->second;}
-  if(export_kind==2&&saved&&saved->slot==slot&&saved->stage==stage&&saved->type==type){released(*texture);*texture=retained(saved->texture);}
+ if(export_inputs&&active_draw&&active_draw->texture_capture&&texture->object){
+  unsigned index=active_draw->texture_index++;
+  if(export_kind==1&&export_inputs->context==export_inputs->target->context){
+   auto saved=std::make_unique<SavedTexture>();
+   saved->texture=retained(*texture);saved->slot=slot;saved->stage=stage;saved->type=type;
+   export_inputs->textures[index]=std::move(saved);
+  }else if(export_kind==2&&export_home&&export_home->context==export_inputs->context&&
+           export_home->generation==export_inputs->generation){
+   auto it=export_inputs->textures.find(index);
+   if(it!=export_inputs->textures.end()){
+    const auto&saved=*it->second;
+    if(saved.slot==slot&&saved.stage==stage&&saved.type==type){
+     released(*texture);*texture=retained(saved.texture);
+    }
+   }
+  }
  }
  return original_bind(pass,stage,type,slot,metadata,texture,sampler);
 }
 using BufferContents=uint8_t*(*)(uintptr_t);BufferContents buffer_contents=nullptr;
 using CopyHost=bool(*)(uintptr_t,const uint8_t*,size_t,size_t,size_t);CopyHost copy_host=nullptr;
 using BindUniform=bool(*)(uintptr_t,uint64_t,uint32_t,void*);BindUniform original_uniform=nullptr;
+bool resting_transform(const float*matrix,const float*rect,float density){
+ auto equal=[](float a,float b){return std::abs(a-b)<0.001f;};
+ return equal(matrix[0],density)&&equal(matrix[5],density)&&
+        equal(matrix[1],0)&&equal(matrix[4],0)&&equal(matrix[15],1)&&
+        std::abs(matrix[12]-rect[0])<1&&std::abs(matrix[13]-rect[1])<1;
+}
+void rest_screen_transform(float*matrix,const HgCaptureTransform&transform){
+ // Left-multiply the inverse workspace transform. Retain all other axes
+ // and the local transform, including fractional material origins.
+ for(unsigned i=0;i<16;i+=4){
+  matrix[i+3]/=transform.w;
+  matrix[i]=(matrix[i]-transform.x*matrix[i+3])/transform.scale;
+  matrix[i+1]=(matrix[i+1]-transform.y*matrix[i+3])/transform.scale;
+ }
+}
 bool material_uniform(uintptr_t pass,uint64_t binding,uint32_t type,void*view){
- if((export_kind==1||export_kind==2)&&active_draw&&binding==0){auto words=(uintptr_t*)view;uintptr_t buffer=words[2]?words[2]:words[0];size_t length=words[4];
-  if(buffer&&length>=128&&length<=65536){GlassKey key=*active_draw;key.geometry[7]=uniform_index++;auto data=buffer_contents(buffer);
-   if(data){data+=words[3]+64;std::lock_guard<std::mutex>lock(glass_mutex);
-    if(export_kind==1)opening_uniforms[key]={binding,type,std::vector<uint8_t>(data,data+64)};
-    else{auto at=opening_uniforms.find(key);if(at!=opening_uniforms.end()&&at->second.binding==binding&&at->second.type==type&&at->second.bytes.size()==64)copy_host(buffer,at->second.bytes.data(),0,64,words[3]+64);}
+ if(active_draw&&binding==0&&(!export_kind||active_draw->selected)){
+  const auto*words=(const uintptr_t*)view;
+  uintptr_t buffer=words[2]?words[2]:words[0];
+  // FrameInfo is the vertex binding. Its second matrix is the display
+  // sampling transform, independent of the geometry transform before it.
+  if(buffer&&words[4]==192){
+   auto data=buffer_contents(buffer);
+   if(data){
+    float matrix[16];memcpy(matrix,data+words[3]+64,sizeof(matrix));
+    if(!export_kind){
+     float density=display_density.load(std::memory_order_relaxed);
+     if(density>0&&std::abs(matrix[12]-active_draw->rect[0])<1&&std::abs(matrix[13]-active_draw->rect[1])<1)
+      active_draw->resting=resting_transform(matrix,active_draw->rect,density);
+    }else if(export_target&&export_target->transform.scale!=1&&
+             !resting_transform(matrix,active_draw->rect,export_target->transform.density)){
+     rest_screen_transform(matrix,export_target->transform);
+     copy_host(buffer,reinterpret_cast<const uint8_t*>(matrix),0,sizeof(matrix),words[3]+64);
+    }
    }
   }
  }
@@ -139,15 +382,26 @@ bool material_uniform(uintptr_t pass,uint64_t binding,uint32_t type,void*view){
 }
 bool material_draw(uintptr_t canvas,const void*filter,const void*rect,const void*clip,uint64_t view,uint64_t has_view,uint64_t backdrop,uint64_t has_backdrop,float alpha){
  uintptr_t context=**(uintptr_t**)canvas;
- // In-pass glass on folders/other desktop pages does not call AcquireGlass.
- // Its context must also reach the GPU crop before any byte readback.
  if(export_kind&&!export_context.object)export_context=retained(*(NativeRef*)*(uintptr_t*)canvas);
- GlassKey draw_key{};
- if(export_kind){const float*r=(const float*)rect;auto quantize=[](float v){return int64_t(std::llround(double(v)*16));};
-  draw_key={context,(has_view&1)?view:0,{quantize(r[0]),quantize(r[1]),quantize(r[2]),quantize(r[3]),(has_backdrop&1)?int64_t(backdrop):0,int64_t(has_backdrop&1),int64_t(has_view&1),0}};
+ ensure_export_home_pinned(context);
+ const auto*r=(const float*)rect;
+ const bool target_draw=export_target&&(export_kind==1||export_kind==2)&&
+                     std::abs(r[0]-export_target->x)<=1&&std::abs(r[1]-export_target->y)<=1;
+ bool texture_capture=false;
+ if(target_draw&&export_inputs&&!export_inputs->target){
+  auto quantize=[](float v){return int64_t(std::llround(double(v)*16));};
+  GlassKey key{context,(has_view&1)?view:0,{quantize(r[0]),quantize(r[1]),quantize(r[2]),quantize(r[3]),(has_backdrop&1)?int64_t(backdrop):0,int64_t(has_backdrop&1),int64_t(has_view&1)}};
+  std::lock_guard<std::mutex>lock(glass_mutex);
+  auto saved=opening_inputs.extract(key);
+  if(export_kind==2&&!saved.empty())*export_inputs=std::move(saved.mapped());
+  export_inputs->target=key;texture_capture=true;
  }
- const GlassKey*previous=active_draw;unsigned previous_uniform=uniform_index,previous_texture=texture_index;active_draw=export_kind&&has_target&&std::abs(draw_key.geometry[0]-int64_t(target_x)*16)<=16&&std::abs(draw_key.geometry[1]-int64_t(target_y)*16)<=16?&draw_key:nullptr;uniform_index=texture_index=0;
- bool ok=original_draw(canvas,filter,rect,clip,view,has_view,backdrop,has_backdrop,alpha);active_draw=previous;uniform_index=previous_uniform;texture_index=previous_texture;return ok;
+ MaterialDraw draw{r,target_draw,texture_capture,0,{}};
+ auto*previous=active_draw;active_draw=&draw;
+ bool ok=original_draw(canvas,filter,rect,clip,view,has_view,backdrop,has_backdrop,alpha);
+ active_draw=previous;
+ if(!export_kind&&ok&&draw.resting)observe_home(context,*draw.resting,Clock::now());
+ return ok;
 }
 
 void retain_image(uintptr_t p){if(p)__atomic_fetch_add((uint32_t*)(p+8),1,__ATOMIC_RELAXED);}
@@ -220,8 +474,31 @@ uintptr_t entry(const Program&program,const Resolved&result,uintptr_t base,const
  return 0;
 }
 }
-void queue_material_target(unsigned kind,unsigned x,unsigned y){
- std::lock_guard<std::mutex>lock(targets_mutex);if(targets.size()>=64)targets.pop_front();targets.push_back({kind,x,y});
+void set_material_density(float density){
+ display_density.store(density,std::memory_order_relaxed);
+}
+static void update_scene_flag(uint32_t flag,bool enabled){
+ auto epoch=home_scene_epoch.load(std::memory_order_relaxed);
+ while(bool(epoch&flag)!=enabled&&!home_scene_epoch.compare_exchange_weak(
+       epoch,(epoch+(scene_flags+1))^flag,std::memory_order_relaxed)){}
+}
+void set_home_material_ready(bool ready){
+ update_scene_flag(scene_ready,ready);
+}
+void set_workspace_scrolling(bool scrolling){
+ update_scene_flag(workspace_scrolling,scrolling);
+}
+unsigned queue_material_target(unsigned kind,unsigned x,unsigned y,const HgCaptureTransform&transform){
+ std::lock_guard<std::mutex>lock(targets_mutex);
+ // A cancelled image cannot misroute the next capture, even in the same stage.
+ if(targets.size()>=64){
+  auto oldest=targets.upper_bound(target_sequence);
+  targets.erase(oldest==targets.end()?targets.begin():oldest);
+ }
+ target_sequence=target_sequence%ticket_mask+1;
+ targets.insert_or_assign(target_sequence,MaterialTarget{kind,x,y,transform});
+ if(kind!=3)set_material_density(transform.density);
+ return target_sequence;
 }
 uintptr_t image_peer(uintptr_t image,uintptr_t heap){
  uintptr_t wrapper=heap+*(uint32_t*)(image+7),fields=heap+*(uint32_t*)(wrapper+7),storage=*(uintptr_t*)(fields+7);
@@ -241,7 +518,8 @@ bool crop_export_image(uintptr_t peer,unsigned x,unsigned y,unsigned width,unsig
  return true;
 }
 bool install_material_hooks(uintptr_t base,const Program&program,const Resolved&result){
- if(original_raster&&original_draw&&original_bind&&original_uniform&&original_acquire&&original_image_ready)return true;
+ if(original_raster&&original_draw&&original_bind&&original_uniform&&original_acquire&&original_image_ready&&
+    original_try_get&&original_try_get_tinted&&cache_remove)return true;
  if(!(result.ready&2))return false;
  create_texture=(CreateTexture)entry(program,result,base,".material-create-texture");
  create_blit=(CreateBlit)entry(program,result,base,".material-create-blit");
@@ -250,7 +528,8 @@ bool install_material_hooks(uintptr_t base,const Program&program,const Resolved&
  original_make_image=(MakeImage)entry(program,result,base,".material-make-image");
  buffer_contents=(BufferContents)entry(program,result,base,".material-buffer-contents");
  copy_host=(CopyHost)entry(program,result,base,".material-copy-host");
- if(!create_texture||!create_blit||!add_copy||!enqueue||!original_make_image||!buffer_contents||!copy_host)return false;
+ cache_remove=(CacheRemove)entry(program,result,base,".material-cache-remove");
+ if(!create_texture||!create_blit||!add_copy||!enqueue||!original_make_image||!buffer_contents||!copy_host||!cache_remove)return false;
  const HookSpec specs[]={
   {entry(program,result,base,".material-raster"),(void*)material_raster,(void**)&original_raster},
   {entry(program,result,base,".material-draw"),(void*)material_draw,(void**)&original_draw},
@@ -258,6 +537,8 @@ bool install_material_hooks(uintptr_t base,const Program&program,const Resolved&
   {entry(program,result,base,".material-uniform"),(void*)material_uniform,(void**)&original_uniform},
   {entry(program,result,base,".material-acquire"),(void*)material_acquire,(void**)&original_acquire},
   {entry(program,result,base,".material-image-ready"),(void*)material_image_ready,(void**)&original_image_ready},
+  {entry(program,result,base,".material-cache-try-get"),(void*)material_try_get,(void**)&original_try_get},
+  {entry(program,result,base,".material-cache-try-get-tinted"),(void*)material_try_get_tinted,(void**)&original_try_get_tinted},
  };
  bool ok=install_hook_group(specs,sizeof(specs)/sizeof(specs[0]));
  static bool reported=false;if(ok&&!reported){reported=true;LOG("Native material capture ready: independent GPU backdrop, live foreground");}

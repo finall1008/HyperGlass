@@ -55,13 +55,18 @@ static void dispose_image(uintptr_t p){auto&im=*(FakeImage*)p;assert(!im.dispose
 static void make_image(uintptr_t*out,hg::NativeRef*texture,unsigned owning){auto im=std::make_unique<FakeImage>();im->table=image_table;im->texture=*texture;im->owning=owning;*texture={};*out=(uintptr_t)im.get();images.push_back(std::move(im));}
 static void image_ready(uintptr_t,const uintptr_t*){}
 static bool cached_raster=false;
+static void (*raster_draw)()=nullptr;
 static void raster(uintptr_t closure){
  uintptr_t block=*(uintptr_t*)(closure+8);assert((*(uintptr_t*)(block+0x48)&((1u<<29)|(1u<<28)))==0);
  if(!cached_raster)hg::material_acquire((uintptr_t)canvas,nullptr,nullptr,1,1,1,nullptr,false);
+ if(raster_draw)raster_draw();
 }
-static void export_frame(unsigned kind){
- alignas(8) uint8_t block[120]{};uintptr_t view=7|(uintptr_t(kind)<<28);memcpy(block+0x48,&view,8);
- if(kind)hg::queue_material_target(kind,69,802);uintptr_t closure[2]{0,(uintptr_t)block};hg::material_raster((uintptr_t)closure);
+static void export_frame(unsigned kind,unsigned x=69,unsigned y=802,float scale=1,float shift_x=0,float shift_y=0){
+ unsigned ticket=kind?hg::queue_material_target(kind,x,y,{scale,shift_x,shift_y,scale==1?1:.9999f,2.85f}):0;
+ alignas(8) uint8_t block[120]{};
+ uintptr_t view=7|(uintptr_t(kind)<<28)|(uintptr_t(ticket)<<HG_CAPTURE_VIEW_BITS);
+ memcpy(block+0x48,&view,8);
+ uintptr_t closure[2]{0,(uintptr_t)block};hg::material_raster((uintptr_t)closure);
  assert(*(uintptr_t*)(block+0x48)==7&&hg::export_kind==0);
 }
 static unsigned buffer_releases=0,forwarded_callbacks=0;static bool empty_buffer=false;
@@ -81,20 +86,92 @@ static void init(uintptr_t key,void*surface,hg::StreamCallback cb,int display,fl
  assert(surface==(void*)9&&display==1&&rate==.25f&&a==1120&&b==2436&&orientation==-1&&count==1&&!strcmp(names[0],"keep-original-window-rule"));cb((void*)(key+0x100),key);
 }
 static bool draw_textures=false;static hg::NativeRef texture_input;static uint32_t seen_texture=0;
+static unsigned cache_lookups=0,tinted_lookups=0;
+static std::map<std::pair<uintptr_t,uint8_t>,uintptr_t> cache_entries;
+static std::vector<std::pair<uintptr_t,hg::BlurCacheKey>> removed_cache_keys;
+static bool cache_lookup(uintptr_t cache,const void*key,const void*,void*entry,bool*found){
+ cache_lookups++;
+ auto item=cache_entries.find({cache,static_cast<const uint8_t*>(key)[0x18]});
+ bool hit=item!=cache_entries.end();
+ if(found)*found=hit;
+ if(hit&&entry)*static_cast<uintptr_t*>(entry)=item->second;
+ return hit;
+}
+static bool tinted_lookup(uintptr_t cache,const void*key,const void*,uint32_t,void*){
+ tinted_lookups++;
+ return cache_entries.count({cache,static_cast<const uint8_t*>(key)[0x18]})!=0;
+}
+static void remove_cache_key(uintptr_t cache,const void*key){
+ assert(hg::active_pin&&hg::active_pin->active);
+ assert(*(uintptr_t*)(state+0x60)==0);
+ hg::BlurCacheKey normalized=hg::normalize_blur_key(key);
+ assert(!memcmp(key,normalized.bytes,sizeof(normalized.bytes)));
+ assert(cache_entries.erase({cache,normalized.bytes[0x18]})==1);
+ removed_cache_keys.emplace_back(cache,normalized);
+}
+static bool expect_pin=false;
+static void check_cache_draw(bool target_rect){
+ const auto context=(uintptr_t)fake_context;
+ auto&home=hg::materials.at(context);
+ const bool selected=target_rect&&(hg::export_kind==1||hg::export_kind==2);
+ assert(hg::active_draw&&hg::active_draw->selected==selected);
+ assert((hg::active_pin&&hg::active_pin->active)==expect_pin);
+ auto texture=*(hg::NativeRef*)state;
+ if(expect_pin){
+  assert(hg::active_pin->context==context&&texture.object==home.texture.object);
+  assert(!(*(hg::NativeRef*)(state+0x70)).object);
+  assert(*(uintptr_t*)(state+0x18)==home.generation&&*(uintptr_t*)(state+0x60)==0);
+ }else{
+  assert(texture.object!=home.texture.object);
+  assert((*(hg::NativeRef*)(state+0x70)).object&&*(uintptr_t*)(state+0x60)==123);
+ }
+ assert(hg::material_acquire((uintptr_t)canvas,nullptr,nullptr,1,1,1,nullptr,false));
+ assert((*(hg::NativeRef*)state).object==texture.object);
+ if(expect_pin)assert(observed_generation==home.generation&&observed_factory==0);
+ hg::BlurCacheKey key;
+ key.bytes[0]=2;key.bytes[8]=45;key.bytes[0x10]=1;key.bytes[0x14]=17;
+ key.bytes[0x18]=target_rect?21:23;
+ const auto lookups=cache_lookups,tinted=tinted_lookups;
+ bool found=true;
+ uintptr_t entry=0;
+ if(!expect_pin||!selected){
+  assert(hg::material_try_get(101,key.bytes,nullptr,&entry,&found)&&found);
+  assert(entry!=home.texture.object&&hg::material_try_get_tinted(101,key.bytes,nullptr,0,nullptr));
+  assert(cache_lookups==lookups+1&&tinted_lookups==tinted+1);
+  if(!expect_pin)return;
+  key.bytes[0x18]=22;
+  assert(!hg::material_try_get(101,key.bytes,nullptr,nullptr,&found)&&!found);
+  assert(cache_lookups==lookups+2);
+  cache_entries.emplace(std::make_pair(101,22),texture.object);
+  return;
+ }
+ assert(cache_entries.at({101,21})!=texture.object);
+ assert(!hg::material_try_get(101,key.bytes,nullptr,&entry,&found)&&!found&&!entry);
+ assert(!hg::material_try_get_tinted(101,key.bytes,nullptr,0,nullptr));
+ auto other_padding=key;
+ for(unsigned byte:{4,5,6,7,0x11,0x12,0x13,0x1c,0x1d,0x1e,0x1f})other_padding.bytes[byte]=0xff;
+ assert(!hg::material_try_get(101,other_padding.bytes,nullptr,nullptr,nullptr));
+ assert(!hg::material_try_get(102,other_padding.bytes,nullptr,nullptr,nullptr));
+ assert(cache_lookups==lookups&&tinted_lookups==tinted);
+ cache_entries.at({101,21})=texture.object;
+ cache_entries.at({102,21})=texture.object;
+}
 static bool texture_bind(uintptr_t pass,uint32_t stage,uint32_t type,const void*slot,const void*metadata,hg::NativeRef*texture,uintptr_t sampler){
  assert(pass==11&&stage==2&&type==3&&slot==(void*)12&&metadata==(void*)13&&sampler==14);seen_texture=texture->object?resource(*texture).color:0;hg::released(*texture);*texture={};return true;
 }
 static bool draw_uniforms=false,host_copy_failure=false;static uint64_t uniform_binding=0;
-static uint8_t uniform_data[512]{};static uintptr_t uniform_view[]={0,0,123,13,192};static uint8_t seen_uniform=0;
+static unsigned uniform_writes=0;
+static uint64_t draw_backdrop=7;
+static uint8_t uniform_data[512]{};static uintptr_t uniform_view[]={0,0,123,13,192};static float seen_matrix[16];
 static uint8_t*buffer_contents(uintptr_t buffer){assert(buffer==123);return uniform_data;}
 static bool copy_host(uintptr_t buffer,const uint8_t*data,size_t start,size_t length,size_t offset){
- assert(buffer==123&&start==0&&offset+length<=sizeof(uniform_data));if(host_copy_failure)return false;memcpy(uniform_data+offset,data,length);return true;
+ assert(buffer==123&&start==0&&offset+length<=sizeof(uniform_data));if(host_copy_failure)return false;uniform_writes++;memcpy(uniform_data+offset,data,length);return true;
 }
 static bool uniform(uintptr_t pass,uint64_t binding,uint32_t type,void*view){
- assert(pass==11&&binding==uniform_binding&&type==6&&view==uniform_view);seen_uniform=uniform_data[77];return true;
+ assert(pass==11&&binding==uniform_binding&&type==6&&view==uniform_view);memcpy(seen_matrix,uniform_data+77,sizeof(seen_matrix));return true;
 }
 static bool draw(uintptr_t c,const void*,const void*,const void*clip,uint64_t view,uint64_t has_view,uint64_t backdrop,uint64_t has_backdrop,float alpha){
- assert(c==(uintptr_t)canvas&&clip==(void*)9&&view==55&&has_view==1&&backdrop==7&&has_backdrop==1&&alpha==1);
+ assert(c==(uintptr_t)canvas&&clip==(void*)9&&view==55&&has_view==1&&backdrop==draw_backdrop&&has_backdrop==1&&alpha==1);
  if(draw_textures){auto texture=hg::retained(texture_input);if(!hg::material_bind(11,2,3,(void*)12,(void*)13,&texture,14))return false;assert(!texture.object);}
  return !draw_uniforms||hg::material_uniform(11,uniform_binding,6,uniform_view);
 }
@@ -107,16 +184,57 @@ int main(){
  fake_context[0]=(uintptr_t)context_table;fake_context[1]=(uintptr_t)backend;backend[2]=(uintptr_t)state;content[0]=(uintptr_t)fake_context;canvas[0]=(uintptr_t)content;
  auto source=make_resource("source");resource(source).color=0xff335577;*(hg::NativeRef*)state=source;*(uintptr_t*)(state+0x18)=12;*(uintptr_t*)(state+0x60)=123;
  auto keeper=make_resource("keeper");*(hg::NativeRef*)(state+0x70)=keeper;
- export_frame(0);assert(observed_color==0xff335577&&copies==1);
+ const auto context=(uintptr_t)fake_context;
+ auto time=hg::Clock::now();
+ auto observe=[&](bool resting,int ms){hg::observe_home(context,resting,time+std::chrono::milliseconds(ms));};
+ export_frame(0);assert(observed_color==0xff335577&&copies==0);
+ observe(true,0);observe(true,50);assert(copies==1);
  consume_pending=true;export_frame(1);assert(observed_color==0xff123456&&copies==1);
- export_frame(3);assert(copies==1&&hg::materials.begin()->second.locked);
+ export_frame(3);assert(copies==1&&hg::materials.at(context).generation==12);
  resource(source).color=0xff000000;*(uintptr_t*)(state+0x18)=33;
  export_frame(2);assert(observed_color==0xff335577&&observed_generation==12&&observed_factory==0);
  assert(*(uintptr_t*)(state+0x18)==33&&*(uintptr_t*)(state+0x60)==123&&(*(hg::NativeRef*)state).object==source.object&&(*(hg::NativeRef*)(state+0x70)).object==keeper.object);
  export_frame(0);assert(observed_color==0xff000000&&observed_generation==33&&observed_factory==123);
- resource(source).color=0xffabcdef;(*(uintptr_t*)(state+0x18))++;export_frame(0);cached_raster=true;export_frame(1);cached_raster=false;assert(copies==3&&observed_color==0xffabcdef);
- resource(source).color=0xff445566;allocation_failure=true;export_frame(1);assert(copies==3);
- export_frame(2);assert(observed_color==0xffabcdef);allocation_failure=false;
+ // Detached scenes are placed in physical coordinates before the raster.
+ // Even with a unit correction, they pin the resting source on demand.
+ cached_raster=true;
+ raster_draw=[](){
+  const float rect[]={869,1656,1040,1827};
+  assert(hg::export_target&&hg::export_target->transform.scale==1);
+  hg::ensure_export_home_pinned((uintptr_t)fake_context);
+  assert(hg::active_pin&&hg::active_pin->active&&hg::export_target->x==unsigned(rect[0]));
+  acquire((uintptr_t)canvas,nullptr,nullptr,1,1,1,nullptr,false);
+ };
+ export_frame(2,869,1656);
+ assert(observed_color==0xff335577&&observed_generation==12&&observed_factory==0);
+ assert(*(uintptr_t*)(state+0x18)==33&&*(uintptr_t*)(state+0x60)==123);
+ raster_draw=nullptr;cached_raster=false;
+ observe(false,100);observe(true,150);observe(false,165);
+ assert(copies==1&&hg::materials.at(context).generation==12);
+ observe(true,200);observe(true,250);assert(copies==2&&hg::materials.at(context).generation==33);
+ // Home resumes at full scale while the new stream still samples the app.
+ hg::set_home_material_ready(false);
+ resource(source).color=0xff5a5a5a;*(uintptr_t*)(state+0x18)=34;
+ observe(true,255);observe(true,500);observe(true,750);
+ assert(copies==2&&hg::materials.at(context).generation==33);
+ export_frame(2);
+ assert(observed_color==0xff000000&&observed_generation==33);
+ export_frame(0);
+ assert(observed_color==0xff5a5a5a&&observed_generation==34);
+ hg::set_home_material_ready(true);
+ observe(true,800);assert(copies==2);
+ resource(source).color=0xffabcdef;
+ observe(true,850);assert(copies==3&&hg::materials.at(context).generation==34);
+ cached_raster=true;export_frame(1);cached_raster=false;
+ resource(source).color=0xff445566;(*(uintptr_t*)(state+0x18))++;
+ allocation_failure=true;observe(true,900);assert(copies==3);allocation_failure=false;
+ export_frame(2);assert(observed_color==0xffabcdef);
+ unsigned orphan=hg::queue_material_target(2,100,200,{1,0,0,1,2.85f});
+ unsigned other_stage=hg::queue_material_target(3,101,201,{1,0,0,1,4});
+ auto newest=hg::queue_material_target(2,102,202,{1,0,0,1,2.85f});
+ assert(hg::take_target(newest,2)->x==102&&hg::take_target(other_stage,3)->x==101);
+ assert(hg::display_density.load()==2.85f);
+ assert(!hg::take_target(orphan,1)&&!hg::take_target(orphan,2));
  hg::original_dequeue=get_buffer;hg::original_init_excluded=init;hg::original_init_orientation=init;const char*names[]={"keep-original-window-rule"};
  hg::init_orientation(1,(void*)9,callback,1,.25f,1120,2436,-1,names,1);hg::init_excluded(2,(void*)9,callback,1,.25f,1120,2436,-1,names,1);
  auto take=[](uintptr_t stream){return hg::dequeue(stream,2,3,4,5,6,7,8,9,10,11);};
@@ -145,29 +263,103 @@ int main(){
  hg::export_kind=1;hg::export_context={(uintptr_t)fake_context,0};
  for(unsigned i=0;i<12;i++){auto input=hg::retained(source);uintptr_t image=0;make_image(&image,&input,0);hg::material_image_ready(0,&image);hg::release_image(image);assert(hg::captured_images.size()<=8);}
  hg::captured_images.clear();hg::export_kind=0;hg::export_context={};
- alignas(8) uint8_t filter[64]{};float rect[]={0,0,60,60};hg::original_draw=draw;
- auto paint=[&](float a){return hg::material_draw((uintptr_t)canvas,filter,rect,(void*)9,55,1,7,1,a);};
- // Preserve matching material sampling parameters. Different bindings,
- // unmatched geometry, normal draws and failed host copies remain live.
- hg::original_uniform=uniform;hg::buffer_contents=buffer_contents;hg::copy_host=copy_host;draw_uniforms=true;
- memset(uniform_data,0xaa,sizeof(uniform_data));memset(uniform_data+77,0x55,64);
- hg::export_context={};hg::target_x=hg::target_y=0;hg::has_target=true;hg::begin_glass_export(1);hg::export_kind=1;assert(paint(1)&&seen_uniform==0x55);
- assert(hg::export_context.object==(uintptr_t)fake_context);
- memset(uniform_data+77,0x99,64);hg::begin_glass_export(3);hg::export_kind=3;assert(paint(1)&&seen_uniform==0x99&&hg::opening_uniforms.size()==1);
- hg::export_kind=2;assert(paint(1)&&seen_uniform==0x55&&uniform_data[76]==0xaa&&uniform_data[141]==0xaa);
- memset(uniform_data+77,0x99,64);rect[0]++;assert(paint(1)&&seen_uniform==0x99);rect[0]--;
- host_copy_failure=true;assert(paint(1)&&seen_uniform==0x99);host_copy_failure=false;
- hg::export_kind=0;assert(paint(1)&&seen_uniform==0x99);
- uniform_binding=64;hg::export_kind=2;assert(paint(1)&&seen_uniform==0x99);hg::export_kind=0;
- hg::original_bind=texture_bind;draw_uniforms=false;draw_textures=true;texture_input=make_resource("material texture");resource(texture_input).color=17;
- hg::begin_glass_export(1);hg::export_kind=1;assert(paint(1)&&seen_texture==17);
- hg::freeze_material_inputs();resource(texture_input).color=23;
- unsigned saved_copies=copies;hg::begin_glass_export(3);hg::export_kind=3;assert(paint(1)&&seen_texture==23&&hg::opening_textures.size()==1&&copies==saved_copies);
- auto producer=texture_input;texture_input=make_resource("replacement material texture");resource(texture_input).color=91;hg::released(producer);hg::export_kind=2;assert(paint(1)&&seen_texture==17);
- rect[0]++;assert(paint(1)&&seen_texture==91);rect[0]--;hg::export_kind=0;assert(paint(1)&&seen_texture==91);
- producer=texture_input;texture_input={};hg::begin_glass_export(1);hg::export_kind=1;assert(paint(1)&&seen_texture==0&&hg::opening_textures.empty());
- hg::export_kind=2;assert(paint(1)&&seen_texture==0);hg::export_kind=0;hg::released(producer);
- hg::opening_uniforms.clear();hg::opening_textures.clear();
+ hg::original_draw=draw;hg::original_bind=texture_bind;
+ hg::original_uniform=uniform;hg::buffer_contents=buffer_contents;hg::copy_host=copy_host;
+ static float rect[]={869,1656.05f,1040,1827.05f};
+ hg::original_try_get=cache_lookup;hg::original_try_get_tinted=tinted_lookup;hg::cache_remove=remove_cache_key;
+ static float unrelated_rect[]={606,1371,777,1542};
+ raster_draw=+[]{
+  assert(hg::material_draw((uintptr_t)canvas,nullptr,rect,(void*)9,55,1,draw_backdrop,1,1));
+  assert(hg::material_draw((uintptr_t)canvas,nullptr,unrelated_rect,(void*)9,55,1,draw_backdrop,1,1));
+ };
+ hg::original_draw=+[](uintptr_t,const void*,const void*draw_rect,const void*,uint64_t,uint64_t,uint64_t,uint64_t,float){
+  check_cache_draw(draw_rect==rect);
+  return true;
+ };
+ cached_raster=true;  // Pin begins in draw, before the first acquire.
+ uint8_t live_state[sizeof(state)];memcpy(live_state,state,sizeof(state));
+ const auto saved_home=hg::materials.at(context).texture;
+ cache_entries={{{101,21},source.object},{{102,21},source.object},{{101,23},source.object}};
+ for(unsigned kind:{0,1,3}){
+  export_frame(kind,869,1656);
+  assert(removed_cache_keys.empty()&&!hg::active_pin);
+ }
+ hg::materials.at(context).texture={};
+ export_frame(2,869,1656);
+ assert(removed_cache_keys.empty()&&!hg::active_pin);
+ hg::materials.at(context).texture=saved_home;
+ expect_pin=true;
+ export_frame(2,869,1656);
+ expect_pin=false;
+ assert(!hg::active_pin&&!memcmp(live_state,state,sizeof(state)));
+ assert(resource(saved_home).control.owners==0&&resource(source).control.owners==0&&resource(keeper).control.owners==0);
+ assert(cache_entries.size()==1&&cache_entries.at({101,23})==source.object);
+ assert(removed_cache_keys.size()==3);
+ assert(removed_cache_keys[0].first==101&&removed_cache_keys[0].second.bytes[0x18]==21);
+ assert(removed_cache_keys[1].first==102&&removed_cache_keys[1].second.bytes[0x18]==21);
+ assert(removed_cache_keys[2].first==101&&removed_cache_keys[2].second.bytes[0x18]==22);
+ cached_raster=false;
+ raster_draw=+[]{assert(hg::material_draw((uintptr_t)canvas,nullptr,rect,(void*)9,55,1,draw_backdrop,1,1));};
+ hg::original_draw=draw;
+ draw_uniforms=true;
+ const float scale=.861560663f,shift_x=27.1824672f*2.85f,shift_y=59.1218662f*2.85f;
+ const float unscaled[16]={2.85f,0,0,0,0,2.85f,0,0,0,0,1,0,rect[0],rect[1],0,1};
+ float zoomed[16];memcpy(zoomed,unscaled,sizeof(zoomed));
+ zoomed[0]*=scale;zoomed[5]*=scale;
+ zoomed[12]=rect[0]*scale+shift_x;zoomed[13]=rect[1]*scale+shift_y;
+ zoomed[15]=.9999f;
+ auto matrix=[&](const float*values){memset(uniform_data,0xaa,sizeof(uniform_data));memcpy(uniform_data+77,values,sizeof(zoomed));};
+ auto compare=[&](const float*expected){for(unsigned i=0;i<16;i++)assert(std::abs(seen_matrix[i]-expected[i])<.001f);};
+ matrix(zoomed);export_frame(2,869,1656,scale,shift_x,shift_y);compare(unscaled);
+ assert(uniform_data[76]==0xaa&&uniform_data[141]==0xaa);
+ assert(uniform_writes==1);
+ matrix(unscaled);export_frame(2,869,1656,scale,shift_x,shift_y);
+ assert(!memcmp(seen_matrix,unscaled,sizeof(unscaled))&&uniform_writes==1);
+ matrix(zoomed);export_frame(2,606,1371,scale,shift_x,shift_y);compare(zoomed);
+ matrix(zoomed);export_frame(3,869,1656,scale,shift_x,shift_y);compare(zoomed);
+ host_copy_failure=true;export_frame(2,869,1656,scale,shift_x,shift_y);compare(zoomed);host_copy_failure=false;
+ uniform_binding=64;export_frame(2,869,1656,scale,shift_x,shift_y);compare(zoomed);uniform_binding=0;
+ assert(hg::resting_transform(unscaled,rect,2.85f)&&!hg::resting_transform(zoomed,rect,2.85f));
+
+ // An unrelated press or widget raster cannot evict the target's texture
+ // inputs. A new backdrop generation makes earlier inputs ineligible.
+ *(uintptr_t*)(state+0x18)=34;
+ draw_uniforms=false;draw_textures=true;texture_input=make_resource("material texture");
+ resource(texture_input).color=17;
+ export_frame(1,869,1656);assert(seen_texture==17&&hg::opening_inputs.size()==1);
+ resource(texture_input).color=23;draw_backdrop=8;
+ export_frame(1,869,1656);assert(hg::opening_inputs.size()==2);
+ draw_backdrop=7;resource(texture_input).color=91;
+ export_frame(3,869,1656);assert(seen_texture==91&&hg::opening_inputs.size()==2);
+ export_frame(2,869,1656);assert(seen_texture==17&&hg::opening_inputs.size()==1);
+ export_frame(2,869,1656);assert(seen_texture==91);
+ export_frame(1,869,1656);assert(hg::opening_inputs.size()==2);
+ *(uintptr_t*)(state+0x18)=36;observe(true,450);observe(true,500);
+ resource(texture_input).color=92;
+ export_frame(2,869,1656);assert(seen_texture==92);
+ // Sparse draws cannot qualify a new Home scene, but a scene already
+ // confirmed at rest must accept a changed wallpaper on its first draw.
+ auto&home=hg::materials.at(context);
+ assert(home.generation==36);
+ *(uintptr_t*)(state+0x18)=37;observe(true,1000);observe(true,1200);
+ assert(home.generation==36);
+ observe(true,1250);assert(home.generation==37);
+ *(uintptr_t*)(state+0x18)=38;observe(true,5000);assert(home.generation==38);
+ hg::set_home_material_ready(false);
+ *(uintptr_t*)(state+0x18)=39;observe(true,6000);assert(home.generation==38);
+ hg::set_home_material_ready(true);observe(true,6100);assert(home.generation==38);
+ observe(true,6150);assert(home.generation==39);
+ puts("PASS confirmed resting scene refreshes an idle wallpaper without qualifying sparse transition draws");
+ hg::set_workspace_scrolling(true);
+ *(uintptr_t*)(state+0x18)=40;observe(true,7000);observe(true,7100);
+ assert(home.generation==39);
+ hg::set_home_material_ready(false);hg::set_workspace_scrolling(false);
+ observe(true,7200);assert(home.generation==39);
+ hg::set_home_material_ready(true);observe(true,7300);assert(home.generation==39);
+ observe(true,7350);assert(home.generation==40);
+ puts("PASS workspace motion preserves the resting texture and scroll end cannot reopen an app scene");
+ hg::released(texture_input);
+ hg::opening_inputs.clear();
  hg::released(hg::export_context);hg::export_context={};
  for(const auto&im:images)assert(im->disposed&&im->count==0);
  hg::materials.clear();hg::released(source);hg::released(keeper);hg::released(allocator_ref);
@@ -176,5 +368,5 @@ int main(){
  const hg::HookSpec group[]={{0x1000,(void*)0x2000,&orig_a},{0x1020,(void*)0x2020,&orig_b},{0x1040,(void*)0x2040,&orig_c}};
  fail_hook_at=3;assert(!hg::install_hook_group(group,3)&&hook_calls==3&&unhook_calls==2&&!orig_a&&!orig_b&&!orig_c);
  hook_calls=unhook_calls=0;fail_hook_at=99;assert(hg::install_hook_group(group,3)&&hook_calls==3&&unhook_calls==0&&orig_a&&orig_b&&orig_c);
- puts("PASS native GPU-copy ownership, producer overwrite isolation, GPU crop geometry, image/context lifetime, bounded pending exports, failure fallback, interleaved widget refresh isolation, stage restoration, independent stream startup filtering and transactional hook rollback");
+ puts("PASS native GPU-copy ownership, producer overwrite isolation, GPU crop geometry, image/context lifetime, bounded pending exports, failure fallback, interleaved widget refresh isolation, full-export backdrop pin and cache eviction, resting uniform preservation, independent stream startup filtering and transactional hook rollback");
 }

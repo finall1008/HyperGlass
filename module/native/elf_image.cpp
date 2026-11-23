@@ -161,6 +161,7 @@ uint32_t instruction_mask(uint32_t w,bool frames){
  unsigned rn=(w>>5)&31,rd=w&31;
  if((w&0x3b000000)==0x39000000)return frames&&(rn==15||rn==29||rn==31)?0xffffffff:0xffc003ff;
  if((w&0x3b200000)==0x38000000)return frames&&(rn==15||rn==29||rn==31)?0xffffffff:0xffe00fff;
+ if((w&0xffc00000)==0x69400000)return frames&&(rn==15||rn==29||rn==31)?0xffffffff:0xffc07fff;
  if((w&0x1f800000)==0x12800000)return 0xffe0001f;
  if((w&0x1f000000)==0x11000000)return frames&&rn==rd&&(rn==15||rn==29||rn==31)?0xffffffff:0xff8003ff;
  return 0xffffffff;
@@ -179,6 +180,7 @@ int64_t instruction_immediate(uint32_t w,bool *valid){
  if((w&0x1f000000)==0x11000000)return int64_t((w>>10)&4095)<<((w&(1<<22))?12:0);
  if((w&0x3b000000)==0x39000000)return int64_t((w>>10)&4095)<<(w>>30);
  if((w&0x3b200000)==0x38000000){int n=(w>>12)&511;return(n&256)?n-512:n;}
+ if((w&0xffc00000)==0x69400000){int n=(w>>15)&127;return ((n&64)?n-128:n)*4;}
  if(valid)*valid=false;return 0;
 }
 }

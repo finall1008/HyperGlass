@@ -22,6 +22,7 @@ def arm_mask(w,frames=True):
  rn=(w>>5)&31;rd=w&31
  if w&0x3b000000==0x39000000:return 0xffffffff if frames and rn in (15,29,31) else 0xffc003ff
  if w&0x3b200000==0x38000000:return 0xffffffff if frames and rn in (15,29,31) else 0xffe00fff
+ if w&0xffc00000==0x69400000:return 0xffffffff if frames and rn in (15,29,31) else 0xffc07fff
  if w&0x1f800000==0x12800000:return 0xffe0001f
  if w&0x1f000000==0x11000000:return 0xffffffff if frames and rn==rd and rn in (15,29,31) else 0xff8003ff
  return 0xffffffff
@@ -55,6 +56,8 @@ def immediate(w):
  if w&0x3b000000==0x39000000:return ((w>>10)&4095)<<(w>>30)
  if w&0x3b200000==0x38000000:
   n=(w>>12)&511;return n-512 if n&256 else n
+ if w&0xffc00000==0x69400000:
+  n=(w>>15)&127;return (n-128 if n&64 else n)*4
  raise ValueError(hex(w))
 
 def edit_suffix(pattern,masks,target):

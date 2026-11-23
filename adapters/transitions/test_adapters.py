@@ -10,6 +10,11 @@ patches=json.loads((H/'profile.json').read_text())['patches']
 linked=ELFFile(open(H/'capture.elf','rb'));symbols={s.name:s['st_value']for s in linked.get_section_by_name('.symtab').iter_symbols()}
 regs=[getattr(R,f'UC_ARM64_REG_X{i}')for i in range(31)]
 heap=0x100000000;nil=heap+0x8081
+source=ELFFile(open(Path(os.environ.get('HYPERGLASS_REFERENCE_DIR',H.parents[1]/'fixtures/reference'))/'launcher-801027722/libapp.so','rb'))
+def original(va,n):
+ for s in source.iter_segments():
+  if s['p_type']=='PT_LOAD'and s['p_vaddr']<=va<va+n<=s['p_vaddr']+s['p_filesz']:
+   source.stream.seek(s['p_offset']+va-s['p_vaddr']);return source.stream.read(n)
 
 def setup():
  u=Uc(UC_ARCH_ARM64,UC_MODE_ARM);u.mem_map(0x200000,0x200000);u.mem_map(heap,0x40000);mapped=set()
@@ -19,6 +24,10 @@ def setup():
   u.mem_write(va,data)
  for p in patches:put(int(p['vaddr'],16),bytes.fromhex(p['replacement']))
  badge=linked.get_section_by_name('.badge');put(badge['sh_addr'],badge.data())
+ detached=linked.get_section_by_name('.detached_capture')
+ if detached is not None:
+  put(detached['sh_addr'],detached.data())
+  put(symbols['dart_layer_hash'],original(symbols['dart_layer_hash'],116))
  for i,r in enumerate(regs):u.reg_write(r,0x90000+i*16)
  u.reg_write(regs[28],1);u.reg_write(regs[22],nil);u.reg_write(regs[15],0x2f0000);u.reg_write(regs[29],0x2fa000);u.reg_write(regs[27],0x300000);u.reg_write(R.UC_ARM64_REG_SP,0x2ee000)
  u.mem_write(0x300070,struct.pack('<Q',0x12345))
@@ -33,8 +42,8 @@ def execute(u,label,end):u.emu_start(symbols[label],end,count=4000000);assert u.
 
 def scene(u,fw=1120,fh=2436,floor=True,known=True,scale=1.0,shift=(0,0)):
  child,root,off,mat,arr,data,bounds,view,conf,physical=[heap+x for x in range(0x10001,0x10a01,0x100)]
- w(u,child-1,(0x141b<<12)|0x500);w(u,child+0x1f,root);w(u,child+0x4f,off);w(u,child+0x47,nil);ds(u,off+7,[24.2105263158,281.4210526316])
- w(u,root-1,(0x141e<<12)|0x700);w(u,root+0x1f,nil);w(u,root+0x57,mat);w(u,mat+7,arr);w(u,root+0x2b,view)
+ w(u,child-1,(0x141b<<12)|0x500);w(u,child+3,0x01234567);w(u,child+0x1f,root);w(u,child+0x4f,off);w(u,child+0x47,nil);ds(u,off+7,[24.2105263158,281.4210526316])
+ w(u,root-1,(0x141e<<12)|0x700);w(u,root+0x1f,nil);w(u,root+0x53,mat);w(u,root+0x57,mat);w(u,mat+7,arr);w(u,root+0x2b,view)
  ds(u,arr+0x17,[2.85*scale,0,0,0,0,2.85*scale,0,0,0,0,1,0,shift[0],shift[1],0,1]);ds(u,data+0x17,[2.85,0,0,0,0,2.85,0,0,0,0,1,0,0,0,0,1]);ds(u,bounds+7,[0,0,60,60])
  w(u,view+0x5b,conf);w(u,conf+0xb,physical);ds(u,physical+7,[fw,fw,fh,fh])
  q(u,0x2f9ff8,child);q(u,0x2f9ff0,bounds);q(u,0x2fa008,0x191a61c);q(u,0x2fa000,0x2fb000)
@@ -96,12 +105,25 @@ u,put=setup();child,root,data,bounds=scene(u,known=False);before=bytes(u.mem_rea
 assert qi(u,0x2f9ff8)==child and bytes(u.mem_read(bounds+7,32))==before
 print('PASS: unrelated image exports keep their existing scene and dimensions')
 
+# Keep the detached boundary's current contents and translate them to the
+# last mounted logical origin before rasterizing with the resting backdrop.
+if 'capture_layer_identity' in symbols:
+ for matched in (True,False):
+  u,put=setup();child,root,data,bounds=scene(u)
+  w(u,child+0x1f,nil);q(u,0x2faf68,nil)
+  if matched:
+   u.mem_write(0x2f0000-112+32,struct.pack('<6dQ2I',69.1,802.2,2.85,2.85,60,60,0,1120,2436))
+  execute(u,'root_gateway',0xa02918)
+  assert qi(u,0x2f9ff8)==child
+  if matched:
+   assert qi(u,0x2faf68)==2<<29
+   values=struct.unpack('<16d',u.mem_read(data+0x17,128))
+   assert values[0]==values[5]==2.85 and values[12:14]==(69.1,802.2)
+   assert int(struct.unpack('<d',u.mem_read(bounds+7,8))[0])-1048576==69
+  else:
+   assert qi(u,0x2faf68)==nil
+ print('PASS: detached live boundary uses matching mounted placement and resting export')
 # Execute the real wrapper through both existing allocation return PCs.
-source=ELFFile(open(Path(os.environ.get('HYPERGLASS_REFERENCE_DIR',H.parents[1]/'fixtures/reference'))/'launcher-801027722/libapp.so','rb'))
-def original(va,n):
- for s in source.iter_segments():
-  if s['p_type']=='PT_LOAD'and s['p_vaddr']<=va<va+n<=s['p_vaddr']+s['p_filesz']:
-   source.stream.seek(s['p_offset']+va-s['p_vaddr']);return source.stream.read(n)
 for show in [False,True]:
  u,put=setup();put(0x14ebf5c,original(0x14ebf5c,48))
  p=next(p for p in patches if p['vaddr']=='14ebf7c');put(0x14ebf7c,bytes.fromhex(p['replacement']))
@@ -249,30 +271,72 @@ u,put=setup();child,root,data,bounds=scene(u)
 zoom,matrix,values=heap+0x13001,heap+0x13101,heap+0x13201
 w(u,child+0x1f,zoom);w(u,zoom-1,(0x141e<<12)|0x700);w(u,zoom+0x1f,root)
 w(u,zoom+0x53,matrix);w(u,zoom+0x57,matrix);w(u,matrix+7,values)
-ds(u,values+0x17,[.85,0,0,0,0,.85,0,0,0,0,1,0,29.5,64,0,1])
+ds(u,values+0x17,[.85,0,0,0,0,.85,0,0,0,0,1,0,29.5,64,0,.9999])
 execute(u,'root_gateway',0xa02918)
 b=struct.unpack('<4d',u.mem_read(bounds+7,32))
 assert int(b[0])-1048576==69 and int(b[1])-1048576==802
 assert round((b[0]-int(b[0])-0.5)*131072)==171
 assert struct.unpack('<d',u.mem_read(values+0x17,8))[0]==.85
 assert qi(u,0x2faf68)==1<<29
-print('PASS: centered workspace zoom preserves resting crop coordinates and leaves the live matrix intact')
-for marked,on_path,scale in [(True,True,.85),(True,True,1),(False,True,.85),(True,False,.85),(True,True,2.85)]:
+slot,scale,x,y,weight,density=struct.unpack('<Q5f',u.mem_read(0x2f0000-112,28))
+assert slot==0x2faf68 and math.isclose(scale,.85,abs_tol=1e-6)
+assert math.isclose(x,29.5*2.85,abs_tol=1e-5) and math.isclose(y,64*2.85,abs_tol=1e-5)
+assert math.isclose(density,2.85,abs_tol=1e-6)
+assert math.isclose(weight,.9999,abs_tol=1e-6)
+print('PASS: centered workspace zoom preserves resting crop coordinates and exports the screen-space correction')
+u,put=setup();child,root,data,bounds=scene(u)
+w(u,child+0x1f,zoom);w(u,zoom-1,(0x141e<<12)|0x700);w(u,zoom+0x1f,root)
+w(u,zoom+0x53,matrix);w(u,matrix+7,values)
+ds(u,values+0x17,[.85,0,0,0,0,.85,0,0,0,0,1,0,29.5,64,0,.9999])
+picture=heap+0x13301;w(u,child+0x47,picture)
+w(u,picture+0x1f,child);w(u,picture+0x37,nil);w(u,picture+0x47,nil)
+# A nested material forces the viewport path even without the close caller.
+w(u,picture-1,(0x140f<<12)|0x600);q(u,0x2fc008,0x1b1495c)
+execute(u,'root_gateway',0xa02918)
+assert qi(u,0x2faf68)==2<<29
+u,put=setup();child,root,data,bounds=scene(u)
+offset=heap+0x13301;w(u,root+0x4f,offset);ds(u,offset+7,[14,23])
+execute(u,'root_gateway',0xa02918)
+b=struct.unpack('<4d',u.mem_read(bounds+7,32))
+assert (int(b[0])-1048576,int(b[1])-1048576)==(83,825)
+for marked,on_path,scale,offset in [(True,True,.85,0),(True,True,.85,7),(True,True,1,0),(False,True,.85,0),(True,False,.85,0),(True,True,2.85,0)]:
  u,put=setup();selected=path[3] if on_path else other;capture_frames(u,selected,marked)
  matrix,values=heap+0x13101,heap+0x13201;w(u,selected+0x53,matrix);w(u,matrix+7,values)
+ position=heap+0x13301;w(u,selected+0x4f,position);ds(u,position+7,[offset,0])
  ds(u,values+0x17,[scale,0,0,0,0,scale,0,0,0,0,1,0,29.5,64,0,1])
  builder=heap+0x10901;u.reg_write(regs[1],selected);u.reg_write(regs[2],builder);u.reg_write(regs[30],0x1562400)
- end=0x1562368 if marked and on_path and scale==.85 else 0x1562734
+ end=0x1562368 if marked and on_path and scale==.85 and not offset else 0x1562734
  u.emu_start(symbols['capture_transform'],end,count=2000)
  assert u.reg_read(regs[1])==selected and u.reg_read(regs[2])==builder and u.reg_read(regs[30])==0x1562400
  assert u.reg_read(regs[15])==0x2f0000-(16 if end==0x1562734 else 0)
 print('PASS: transform bypass is limited to marked capture ancestors; original builder, return address and stack survive')
+u,put=setup();child,root,data,bounds=scene(u,known=False)
+u.reg_write(regs[1],root);u.reg_write(regs[30],0x1562400)
+modes=[]
+def viewport_probe(u,pc,size,opaque):
+ modes.append(u.reg_read(regs[16]))
+u.hook_add(UC_HOOK_CODE,viewport_probe,begin=symbols['capture_bridge'],end=symbols['capture_bridge'])
+u.emu_start(symbols['capture_transform'],0x1562734,count=2000)
+assert modes==[10] and u.reg_read(regs[30])==0x1562400
 
 # Closing capture keeps its material marker even while its Dart layout still
 # carries the resting matrix from the preceding frame.
 u,put=setup();child,root,data,bounds=scene(u);q(u,0x2fc008,0x1b136bc)
 execute(u,'root_gateway',0xa02918);assert qi(u,0x2faf68)==1<<30
 print('PASS: closing exports identify the saved backdrop before the workspace zoom updates')
+
+if 'material_scene_signal' in symbols:
+ u,put=setup()
+ section=linked.get_section_by_name('.material_scene');put(section['sh_addr'],section.data())
+ signal=heap+0x13001;u.reg_write(regs[2],signal)
+ saved=[u.reg_read(r)for r in regs]
+ modes=[]
+ u.hook_add(UC_HOOK_CODE,viewport_probe,begin=symbols['capture_bridge'],end=symbols['capture_bridge'])
+ execute(u,'material_scene_signal',symbols['scene_signal_send'])
+ assert modes==[11]
+ assert all(u.reg_read(r)==saved[i]for i,r in enumerate(regs)if i!=16)
+ assert u.reg_read(R.UC_ARM64_REG_SP)==0x2ee000
+ print('PASS: scene signals retain the Dart arguments, stack and original continuation')
 
 # Background provider snapshots must not start a new app flight. A surrounding
 # app open/close still owns the export when it asks for the provider image.

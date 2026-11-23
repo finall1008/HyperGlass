@@ -263,6 +263,7 @@ def catalogs():
  a.add_elf(EX/'icons/processor.elf',['.text.helper','.text'],1)
  a.add_elf(EX/'transitions/boundary.elf',['.message','.selector','.initialize'],2,physical=(0x1722030,))
  a.add_elf(EX/'transitions/capture.elf',['.capture_root','.hooks','.capture_small','.limit_test','.maml_repaint'],2)
+ a.add_elf(EX/'transitions/capture.elf',['.material_scene','.material_scroll','.detached_capture'],2)
  a.add_elf(EX/'transitions/capture.elf',['.text_color','.widget_helpers'],4)
  a.add_elf(EX/'transitions/capture.elf',['.widget_spans'],4)
  a.add_elf(EX/'transitions/capture.elf',['.badge'],32)
@@ -318,8 +319,17 @@ def catalogs():
  e.units.append(Unit('.material-draw',0xc2ff38,b'',2,False,e.model.add(0xc2ff38,frames=True)))
  e.units.append(Unit('.material-bind',0xdf1e60,b'',2,False,e.model.add(0xdf1e60,frames=True)))
  for label,pc in [('.material-uniform',0xdf39ec),('.material-buffer-contents',0xddda34),('.material-copy-host',0xdddc40)]:e.units.append(Unit(label,pc,b'',2,False,e.model.add(pc,frames=True)))
+ for label,pc in [('.material-cache-try-get',0xd54f84),('.material-cache-try-get-tinted',0xd55958),('.material-cache-remove',0xd5628c)]:
+  e.units.append(Unit(label,pc,b'',2,False,e.model.add(pc,frames=True)))
+ for pc,value in [(0xd557e0,8),(0xd557f8,0x10),(0xd55810,0x14)]:
+  e.constraints.append((2,e.model.add(pc,frames=False),-1,value))
  for pc in [0xdf1e94,0xdf3a14,0xdf3a18,0xdf1dd4,0xdf1dd8,0xddda40,0xddda90,0xd5e260]:
   value=immediate(struct.unpack('<I',e.model.image.read(pc,4))[0]);e.constraints.append((2,e.model.add(pc,frames=False),-1,value))
+ # Both F16 vertex paths copy the contents' screen matrix into FrameInfo.
+ # The resolver validates both uploads through their shared binding call.
+ for pc in (0xd5cd40,0xd5d6d4):
+  value=0x188
+  e.constraints.append((2,e.model.add(pc,frames=False),-1,value))
  # Native object and virtual-call ABI used by the GPU copy. A changed ABI
  # removes the complete snapshot feature before its marker can reach a queue.
  for pc in [0xeaf184,0xeaf2dc,0xc39d4c,0xc39db4,0xc2fc28,0xc2fb68,0xc2fc54,0xc39724,0xc39740,0xc39750,0xc39768,0xc53f20,0x6d4d18,0xb44858,0xb44010,0xb44028,0xb4d8d0,0xc3992c]:
@@ -329,6 +339,9 @@ def catalogs():
   value=immediate(struct.unpack('<I',e.model.image.read(pc,4))[0]);e.constraints.append((2,e.model.add(pc,frames=False),-1,value))
  a.constraints.append((2,a.model.add(0x18c643c,frames=False),-1,7))
  for pc,value in [(0x8f1ca0,7),(0x8f1cb0,7),(0x8f1cb4,0)]:a.constraints.append((2,a.model.add(pc,frames=False),-1,value))
+ # TransformLayer.addToScene composes this offset with its raw matrix.
+ for pc,value in [(0x156276c,0x53),(0x1562774,0x57),(0x1562790,0x4f)]:
+  a.constraints.append((2,a.model.add(pc,frames=False),-1,value))
  # Engine has no Dart replay sites.
  # The same relocation pass is shared, with replay injection limited to AOT.
  Catalog.relocate(e)

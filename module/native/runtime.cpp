@@ -9,24 +9,147 @@
 #include <atomic>
 #include <cerrno>
 #include <charconv>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <map>
+#include <optional>
+#include <string_view>
 #include <unistd.h>
+#include <vector>
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO,"HyperGlass",__VA_ARGS__)
 namespace {
 std::atomic<bool> runtime_complete{false};
 using Dispatch=void(*)(uintptr_t*);Dispatch original_dispatch=nullptr;
+static_assert(sizeof(HgCaptureResult)==HG_CAPTURE_RESULT_SIZE);
+struct MountedCapture {
+ HgCapturePlacement placement;
+ uintptr_t thread=0,layer=0;
+ unsigned identity=0;
+ double bounds_x=0,bounds_y=0;
+};
+struct RestingLayer {
+ uintptr_t thread=0,layer=0;
+ unsigned hash=0;
+ double x=0,y=0,scale_x=0,scale_y=0;
+ unsigned viewport_width=0,viewport_height=0;
+};
+constexpr size_t max_mounted_captures=32,max_resting_layers=256;
+thread_local std::vector<MountedCapture> mounted_captures;
+thread_local std::vector<RestingLayer> resting_layers;
+thread_local unsigned last_viewport_width=0,last_viewport_height=0;
+thread_local bool overview_entered=false,workspace_scrolling=false,home_scene_ready=true;
+thread_local unsigned resting_snapshot_retries=12;
+template<class T> T dart_value(uintptr_t address){
+ T value;
+ memcpy(&value,reinterpret_cast<const void*>(address),sizeof(value));
+ return value;
+}
+HgCaptureResult* capture_result(uintptr_t*r){
+ return reinterpret_cast<HgCaptureResult*>(reinterpret_cast<char*>(r)+HG_CAPTURE_RESULT_OFFSET);
+}
+const MountedCapture* find_mounted_capture(uintptr_t thread,uintptr_t layer,uint32_t identity){
+ if(!identity)return nullptr;
+ for(auto it=mounted_captures.rbegin();it!=mounted_captures.rend();++it)
+  if(it->thread==thread&&it->layer==layer&&it->identity==identity)return &*it;
+ return nullptr;
+}
+void remember_mounted_capture(const MountedCapture&entry){
+ if(!entry.identity||!entry.placement.viewport_width||!entry.placement.viewport_height)return;
+ mounted_captures.erase(std::remove_if(mounted_captures.begin(),mounted_captures.end(),[&](const MountedCapture&item){
+  return item.thread==entry.thread&&item.layer==entry.layer;
+ }),mounted_captures.end());
+ if(mounted_captures.size()>=max_mounted_captures)mounted_captures.erase(mounted_captures.begin());
+ mounted_captures.push_back(entry);
+}
+void remember_resting_layer(const RestingLayer&entry){
+ resting_layers.erase(std::remove_if(resting_layers.begin(),resting_layers.end(),[&](const RestingLayer&item){
+  return item.thread==entry.thread&&item.layer==entry.layer;
+ }),resting_layers.end());
+ if(resting_layers.size()>=max_resting_layers)resting_layers.erase(resting_layers.begin());
+ resting_layers.push_back(entry);
+ for(auto&item:mounted_captures){
+  if(item.thread!=entry.thread||item.layer!=entry.layer)continue;
+  if(entry.hash&&item.identity!=entry.hash)continue;
+  if(item.placement.viewport_width!=entry.viewport_width||item.placement.viewport_height!=entry.viewport_height)continue;
+  if(std::abs(item.placement.scale_x-entry.scale_x)>=0.001||std::abs(item.placement.scale_y-entry.scale_y)>=0.001)continue;
+  double rx=entry.x+entry.scale_x*item.bounds_x,ry=entry.y+entry.scale_y*item.bounds_y;
+  if(rx>=-0.5&&ry>=-0.5&&rx+item.placement.width*entry.scale_x<=entry.viewport_width+0.5&&
+     ry+item.placement.height*entry.scale_y<=entry.viewport_height+0.5){
+   item.placement.x=rx;
+   item.placement.y=ry;
+  }
+ }
+}
+std::optional<HgCapturePlacement> recover_resting_placement(
+  uintptr_t thread,uintptr_t layer,uint32_t identity,const HgCapturePlacement&current,double bounds_x,double bounds_y){
+ for(auto it=resting_layers.rbegin();it!=resting_layers.rend();++it){
+  const auto&e=*it;
+  if(e.thread!=thread||e.layer!=layer)continue;
+  if(e.hash&&e.hash!=identity)continue;
+  if(e.viewport_width!=current.viewport_width||e.viewport_height!=current.viewport_height)continue;
+  if(std::abs(e.scale_x-current.scale_x)>=0.001||std::abs(e.scale_y-current.scale_y)>=0.001)continue;
+  double rx=e.x+e.scale_x*bounds_x,ry=e.y+e.scale_y*bounds_y;
+  if(std::abs(ry-current.y)>2.0)continue;
+  if(rx<-0.5||ry<-0.5||rx+current.width*e.scale_x>e.viewport_width+0.5||
+     ry+current.height*e.scale_y>e.viewport_height+0.5)continue;
+  return HgCapturePlacement{rx,ry,e.scale_x,e.scale_y,current.width,current.height,
+                            current.view,e.viewport_width,e.viewport_height};
+ }
+ return {};
+}
+void prepare_capture(uintptr_t*r,double&bounds_x,double&bounds_y){
+ auto*result=capture_result(r);
+ *result={};
+ bounds_x=0;bounds_y=0;
+ const auto bounds=dart_value<uintptr_t>(r[28]-16);
+ if((bounds&1)&&bounds!=r[21]){
+  bounds_x=dart_value<double>(bounds+7);
+  bounds_y=dart_value<double>(bounds+15);
+ }
+ const auto source=dart_value<uintptr_t>(r[28]-8);
+ if(!(source&1)||source==r[21])return;
+ // The Dart hash is stable across collections. Also compare the current
+ // object address, so a moved or unrelated object simply takes stock capture.
+ if(const auto*found=find_mounted_capture(r[25],source,dart_value<uint32_t>(source+3)))
+  result->placement=found->placement;
+}
 void select_maml_repaint_key(uintptr_t*registers);
+void observe_viewport_density(const uintptr_t*registers);
+void observe_material_scene(const uintptr_t*registers);
+void observe_workspace_scroll(const uintptr_t*r){
+ const uintptr_t value=r[2],nil=r[21];
+ if(value!=nil+0x20&&value!=nil+0x30)return;
+ const bool scrolling=value==nil+0x20;
+ if(workspace_scrolling&&!scrolling)resting_snapshot_retries=12;
+ workspace_scrolling=scrolling;
+ hg::set_workspace_scrolling(workspace_scrolling);
+}
 void export_dispatch(uintptr_t*r){
  uintptr_t mode=r[15];
  if(mode==9){select_maml_repaint_key(r);return;}
+ if(mode==10){observe_viewport_density(r);return;}
+ if(mode==11){observe_material_scene(r);return;}
+ if(mode==12){observe_workspace_scroll(r);return;}
+ double bounds_x=0,bounds_y=0;
+ if(mode==0)prepare_capture(r,bounds_x,bounds_y);
  original_dispatch(r);
  // The Dart adapter reports the stage through the saved scratch register
  // after marking the view ID in its current frame slot.
  if(mode==0&&r[15]){uintptr_t fp=r[28],bounds=*(uintptr_t*)(fp-16);const double*rect=(const double*)(bounds+7);
-  hg::queue_material_target(unsigned(r[15]),unsigned(rect[0])-1048576,unsigned(rect[1])-1048576);
+  const auto&capture=*capture_result(r);
+  if(capture.identity){
+   if(!workspace_scrolling){
+    remember_mounted_capture({capture.placement,r[25],capture.layer,capture.identity,bounds_x,bounds_y});
+   }else if(!find_mounted_capture(r[25],capture.layer,capture.identity)){
+    if(auto resting=recover_resting_placement(r[25],capture.layer,capture.identity,capture.placement,bounds_x,bounds_y))
+     remember_mounted_capture({*resting,r[25],capture.layer,capture.identity,bounds_x,bounds_y});
+   }
+  }
+  unsigned ticket=hg::queue_material_target(unsigned(r[15]),unsigned(rect[0])-1048576,unsigned(rect[1])-1048576,
+                                             capture.transform);
+  *capture.view_slot|=uintptr_t(ticket)<<(HG_CAPTURE_VIEW_BITS+1);
  }
 
  if(mode!=1)return;
@@ -71,10 +194,113 @@ int badge_monochrome(){
 struct ImageState { uintptr_t base=0;std::string path;hg::Resolved result;bool attempted=false; };
 std::array<ImageState,3> images;
 
-template<class T> T dart_value(uintptr_t address){
- T value;
- memcpy(&value,reinterpret_cast<const void*>(address),sizeof(value));
- return value;
+std::string_view dart_enum_name(uintptr_t type,uintptr_t heap,uintptr_t nil){
+ if(!(type&1)||type==nil)return {};
+ uintptr_t name=heap+dart_value<uint32_t>(type+0xf);
+ const auto string_class=images[0].result.maml_repaint.string_class;
+ if(!(name&1)||name==nil||dart_value<uint32_t>(name-1)>>12!=string_class)return {};
+ return {reinterpret_cast<const char*>(name+15),dart_value<uint32_t>(name+7)>>1};
+}
+void observe_material_scene(const uintptr_t*r){
+ const uintptr_t signal=r[2],heap=r[27]<<32,nil=r[21];
+ if(!(signal&1)||signal==nil)return;
+ const auto type=dart_enum_name(heap+dart_value<uint32_t>(signal+7),heap,nil);
+ const bool entering_overview=type=="enterOverviewState";
+ if(type=="closingRemoteAnimationClose"||(type=="exitOverviewState"&&overview_entered)){
+  overview_entered=false;
+  home_scene_ready=true;
+  resting_snapshot_retries=12;
+  hg::set_home_material_ready(true);
+ }else if(type=="openingRemoteAnimationClose"||entering_overview){
+  overview_entered=entering_overview;
+  home_scene_ready=false;
+  hg::set_home_material_ready(false);
+ }else if(type=="openingRemoteAnimationOpen"){
+  overview_entered=false;
+  home_scene_ready=false;
+  hg::set_home_material_ready(false);
+ }else if(type=="closingRemoteAnimationOpen"){
+  home_scene_ready=false;
+  hg::set_home_material_ready(false);
+ }
+}
+void observe_viewport_density(const uintptr_t*r){
+ const auto&viewport=images[0].result;
+ const auto*config=reinterpret_cast<const uint32_t*>(hg::adapter_address(viewport,hg_programs[0]->config_source));
+ if(!config)return;
+ uintptr_t layer=r[1],heap=r[27]<<32,nil=r[21];
+ auto ref=[&](uintptr_t object,unsigned offset){return heap+dart_value<uint32_t>(object+offset);};
+ auto object=[&](uintptr_t value){return (value&1)&&value!=nil;};
+ auto cid=[&](uintptr_t value){return dart_value<uint32_t>(value-1)>>12;};
+ if(cid(layer)!=config[2])return;
+ uintptr_t view=ref(layer,config[12]);
+ if(!object(view))return;
+ uintptr_t viewport_config=ref(view,config[10]);
+ if(!object(viewport_config))return;
+ uintptr_t physical=ref(viewport_config,config[11]);
+ if(!object(physical))return;
+ double width=dart_value<double>(physical+config[13]),height=dart_value<double>(physical+config[14]);
+ if(!(width>=1&&width<=16383&&height>=1&&height<=16383))return;
+ const unsigned vw=unsigned(width),vh=unsigned(height);
+ if(vw!=last_viewport_width||vh!=last_viewport_height){
+  last_viewport_width=vw;last_viewport_height=vh;
+  mounted_captures.clear();resting_layers.clear();
+  resting_snapshot_retries=12;
+ }
+ uintptr_t matrix=ref(layer,0x53);
+ if(!object(matrix))return;
+ uintptr_t storage=ref(matrix,7);
+ if(!object(storage))return;
+ auto transform=dart_value<std::array<double,16>>(storage+0x17);
+ double density=transform[0];
+ if(!(density>0&&std::isfinite(density)&&density==transform[5]&&transform[1]==0&&transform[4]==0&&
+      transform[12]==0&&transform[13]==0&&transform[15]==1))return;
+ hg::set_material_density(float(density));
+ if(!resting_snapshot_retries||!home_scene_ready||workspace_scrolling||!config[3]||config[0]>config[15])return;
+ auto is_workspace_zoom=[](double xx,double yy,const std::array<double,16>&v){
+  return xx==0&&yy==0&&v[0]>=0.5&&v[0]<1&&v[5]==v[0]&&v[12]>0&&v[13]>0&&
+         v[1]==0&&v[3]==0&&v[4]==0&&v[7]==0&&
+         v[8]==0&&v[9]==0&&v[11]==0&&v[15]>0.99&&v[15]<1.01;
+ };
+ struct Node{uintptr_t layer;double a,b,c,d,x,y;unsigned depth;};
+ std::vector<Node> stack;
+ stack.push_back({layer,1,0,0,1,0,0,0});
+ bool saw_workspace_zoom=false;
+ size_t visited=1;
+ while(!stack.empty()){
+  Node node=stack.back();stack.pop_back();
+  uintptr_t p=node.layer;
+  uint32_t tag=dart_value<uint32_t>(p-1);
+  unsigned type=tag>>12;
+  double aa=1,bb=0,cc=0,dd=1,xx=0,yy=0;
+  if(type>=config[3]&&type<=config[4]){
+   uintptr_t off_obj=ref(p,0x4f);
+   if(object(off_obj)){xx=dart_value<double>(off_obj+7);yy=dart_value<double>(off_obj+15);}
+  }
+  if(type==config[2]){
+   uintptr_t mat=ref(p,0x53);if(!object(mat))continue;
+   uintptr_t mat_storage=ref(mat,7);if(!object(mat_storage))continue;
+   auto v=dart_value<std::array<double,16>>(mat_storage+0x17);
+   if(is_workspace_zoom(xx,yy,v)){saw_workspace_zoom=true;continue;}
+   aa=v[0];bb=v[1];cc=v[4];dd=v[5];xx+=v[12];yy+=v[13];
+  }
+  double na=node.a*aa+node.c*bb,nb=node.b*aa+node.d*bb;
+  double nc=node.a*cc+node.c*dd,nd=node.b*cc+node.d*dd;
+  double nx=node.a*xx+node.c*yy+node.x,ny=node.b*xx+node.d*yy+node.y;
+  if(type==config[3]&&std::abs(na-density)<0.001&&std::abs(nd-density)<0.001&&nb==0&&nc==0&&
+     nx>=-0.5&&ny>=-0.5&&nx<width&&ny<height){
+   remember_resting_layer({r[25],p,dart_value<uint32_t>(p+3),nx,ny,na,nd,vw,vh});
+  }
+  if(type!=config[15]&&((tag>>8)&15)>=5&&node.depth+1<80){
+   for(uintptr_t c=ref(p,0x47);visited<4096&&object(c);c=ref(c,0x37)){
+    unsigned c_type=cid(c);
+    if(c_type<config[0]||c_type>config[15]||ref(c,0x1f)!=p)break;
+    stack.push_back({c,na,nb,nc,nd,nx,ny,node.depth+1});
+    ++visited;
+   }
+  }
+ }
+ if(saw_workspace_zoom)--resting_snapshot_retries;else resting_snapshot_retries=0;
 }
 struct DartMapEntries {
  uintptr_t data=0;

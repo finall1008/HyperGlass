@@ -15,6 +15,7 @@ validation/*
 !validation/visual/
 validation/visual/*
 !validation/visual/capture.py
+!validation/visual/return_handoff.py
 !validation/visual/scenes.json
 !validation/visual/SetWallpaper.java
 !validation/visual/blur-wallpaper.png

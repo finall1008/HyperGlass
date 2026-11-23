@@ -424,7 +424,16 @@ capture_transform:
  mov x0,x1
  bl limit_test
  mov x30,x12
- cbz x16,transform_replay
+ cbnz x16,transform_export
+ // Learn the live viewport density before the first offscreen capture.
+ ldur w17,[x1,#0x1f]
+ cmp w17,w22
+ b.ne transform_replay
+ mov x16,#10
+ bl capture_bridge
+ mov x30,x12
+ b transform_replay
+transform_export:
  mov x16,#7
  bl capture_bridge
  mov x30,x12
@@ -448,6 +457,27 @@ maml_repaint:
  bl capture_bridge
  ldr x30,[x15],#16
  ret
+#endif
+
+#ifdef HG_ADAPTIVE
+.section .material_scene,"ax"
+.global material_scene_signal
+material_scene_signal:
+ // Preserve the original sendSignal call's Dart return PC.
+ str x30,[x15,#-16]!
+ mov x16,#11
+ bl capture_bridge
+ ldr x30,[x15],#16
+ b scene_signal_send
+
+.section .material_scroll,"ax"
+.global material_workspace_scroll
+material_workspace_scroll:
+ str x30,[x15,#-16]!
+ mov x16,#12
+ bl capture_bridge
+ ldr x30,[x15],#16
+ b material_scroll_target
 #endif
 
 .section .badge,"ax"

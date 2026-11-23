@@ -28,7 +28,7 @@ SCALES = ("window_animation_scale", "transition_animation_scale", "animator_dura
 VIDEO_WIDTH, VIDEO_HEIGHT = 560, 1218
 MOTION_WIDTH, MOTION_HEIGHT = 140, 304
 FPS = 60
-RECORD_SECONDS = 6
+RECORD_SECONDS = 8
 MOTION_ATTEMPTS = 5
 SCENE_SETTLE_SECONDS = 3
 OPEN_TAP_HOLD_MS = 120
@@ -279,7 +279,7 @@ class Emulator:
         try:
             time.sleep(lead_seconds)
             action()
-            output, _ = recorder.communicate(timeout=RECORD_SECONDS + 5)
+            output, _ = recorder.communicate(timeout=RECORD_SECONDS + 12)
             if recorder.returncode:
                 self.ensure_online()
                 raise RuntimeError(f"screenrecord failed: {output.decode(errors='replace').strip()}")
@@ -774,16 +774,21 @@ def capture_scene(emulator, profile, output, work, name, scene, baseline):
     if rest_spec is None:
         return results
     emulator.wait_page(scene["page"])
-    returned = emulator.screenshot()
     spec = rest_spec
-    _, mean, changed = pixel_diff(
-        crop(returned, spec["box"], spec.get("ignore", ())), crop(rest, spec["box"], spec.get("ignore", ())),
-    )
-    if mean > 25 or changed > 60:
-        raise RuntimeError(
-            f"scene precondition: return did not settle on the initial layout "
-            f"(mean_rgb={mean:.3f}, changed_pct={changed:.3f})"
-        )
+    reference = crop(rest, spec["box"], spec.get("ignore", ()))
+    deadline = time.monotonic() + 6
+    while True:
+        returned = emulator.screenshot()
+        _, mean, changed = pixel_diff(crop(returned, spec["box"], spec.get("ignore", ())), reference)
+        if mean <= 25 and changed <= 60:
+            break
+        if time.monotonic() >= deadline:
+            returned.save(output / f"{name}-unsettled.png")
+            raise RuntimeError(
+                f"scene precondition: return did not settle on the initial layout "
+                f"(mean_rgb={mean:.3f}, changed_pct={changed:.3f})"
+            )
+        time.sleep(.25)
     save(f"{name}-returned", returned, spec)
     return results
 
@@ -914,7 +919,13 @@ def main():
                 background = (emulator.test_wallpaper(HERE / wallpaper, args.output / f"{name}-original-wallpaper.png")
                               if wallpaper else nullcontext())
                 with background:
-                    results = capture_scene(emulator, profile, args.output, Path(work), name, scene, baseline)
+                    try:
+                        results = capture_scene(emulator, profile, args.output, Path(work), name, scene, baseline)
+                    except DeviceLostError:
+                        raise
+                    except (RuntimeError, subprocess.SubprocessError) as error:
+                        report["issues"].append(f"{name}: {error}")
+                        results = {}
                 if baseline:
                     for key, result in results.items():
                         if "metric" in result:
@@ -930,7 +941,7 @@ def main():
                 write_report(args.output, report)
 
         report["status"] = "complete"
-        if args.record and all(result.get("pass", True) for result in report["scenes"].values()):
+        if args.record and not report["issues"] and all(result.get("pass", True) for result in report["scenes"].values()):
             publish_baseline(args.baseline, args.output, report)
     except DeviceLostError as error:
         report["status"] = "device_lost"

@@ -38,6 +38,14 @@ frame=image.names['ImageFilterGroup.processAll'][0][0]+8
 word=struct.unpack('<I',image.read(frame,4))[0]
 put_words(frame,[(word&~(4095<<10))|((immediate(word)+8)<<10)])
 
+# Move the SF return receiver to a new slot in an enlarged async frame.
+prepare,size,_=image.names['SfWindowAnimImplementor.prepareIconLayers'][0]
+for pc in range(prepare,prepare+size,4):
+ word=struct.unpack('<I',image.read(pc,4))[0]
+ if word==0x928021f1:put_words(pc,[(word&~(65535<<5))|((0x1a8-1)<<5)])
+ elif word&0xffc003ff in (0xd10001ef,0xd10003af) and immediate(word)==0x1a0:
+  put_words(pc,[(word&~(4095<<10))|(0x1b0<<10)])
+
 # Give the scene export new frame slots for its incoming layer, rectangle,
 # rounding flag and view ID, as well as its await result spills.
 scene,size,_=image.names['OffsetLayer.toImage'][0]
@@ -89,6 +97,12 @@ for rule in catalog.config:
   word=struct.unpack('<I',image.read(pc,4))[0];encoded=(~value if word&0x60000000==0 else value)&65535
   word=(word&~(65535<<5))|(encoded<<5)
   put_words(pc,[word])
+# The detached capture calls a leaf in the current ELF. Ensure the fixture
+# moves that call target with the Dart symbols, as well as the scene slots.
+layer_identity,=image.names['_getHash']
+scroll_target,=image.names['MamlVisibilitySignals.setScrolling']
+assert struct.unpack('<I',image.read(scroll_target[0]+20,4))[0]==0xf81e83a2
+assert struct.unpack('<II',image.read(layer_identity[0],8))==(0xf94001e0,0xb8403000)
 outer=sections(raw);shstr=outer[struct.unpack_from('<H',raw,62)[0]][1];names=raw[shstr[4]:shstr[4]+shstr[5]]
 for at,s in outer:
  name=bytes(names[s[0]:]).split(b'\0',1)[0]
@@ -97,4 +111,4 @@ for at,s in outer:
   offset=(len(raw)+7)&-8;raw.extend(b'\0'*(offset-len(raw)));raw.extend(compressed)
   struct.pack_into('<QQ',raw,at+24,offset,len(compressed))
 shift_elf(raw);out.write_bytes(raw)
-print('Created layout fixture: moved code, changed Dart CIDs, scene and filter frames, shortcut/text registers and span layout',flush=True)
+print('Created layout fixture: moved code, changed Dart CIDs, scene and filter frames, relocated layer identity and workspace scroll, shortcut/text registers and span layout',flush=True)

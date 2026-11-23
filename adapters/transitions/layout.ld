@@ -13,6 +13,9 @@ SECTIONS {
  .widget_wrap 0x2000080 : { *(.widget_wrap) }
  .widget_image_filter 0x2000100 : { *(.widget_image_filter) }
  .maml_repaint 0x2000140 : { *(.maml_repaint) }
+ .material_scene 0x2000180 : { *(.material_scene) }
+ .material_scroll 0x20001c0 : { *(.material_scroll) }
+ .detached_capture 0x2000200 : { *(.detached_capture) }
  /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) }
 }
 async_scene_return = 0x191a61c;
@@ -67,6 +70,7 @@ scope_current_icon = 0x19bf198;
 scope_window_icon = 0x1b1495c;
 scope_maml_icon = 0x19c08e4;
 scope_window_maml = 0x1b15874;
+scene_signal_send = 0x9bb404;
 source_tag_return = 0x1b14738;
 source_tag_tail = 0x11f8168;
 

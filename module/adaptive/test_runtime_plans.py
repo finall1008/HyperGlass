@@ -39,6 +39,62 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
   u.reg_write(R.UC_ARM64_REG_SP,0x2ee000);q(u,0x300070,0x12345)
   return u
  target=Image(Path(imagepath))
+ detector,size,_=target.names['SceneTransitionDetector.detectSceneTransition'][0]
+ sender=target.names['SceneAnimationSignalManager.sendSignal'][0][0]
+ gateway=address(symbols['material_scene_signal'])
+ u=setup()
+ call,=[at for at,raw,group in p['patches']
+        if group==2 and detector<=at-base<detector+size and len(raw)==8
+        and branch_target(int.from_bytes(bytes.fromhex(raw),'little'),at)==gateway]
+ assert branch_target(struct.unpack('<I',target.read(call-base,4))[0],call-base)==sender
+ signal,scene=heap+0x13001,heap+0x13101
+ u.reg_write(regs[2],signal);u.reg_write(regs[3],scene)
+ u.emu_start(call,base+sender,count=2000)
+ assert u.reg_read(R.UC_ARM64_REG_PC)==base+sender and u.reg_read(regs[30])==call+4
+ assert u.reg_read(regs[2])==signal and u.reg_read(regs[3])==scene and u.reg_read(regs[15])==0x2f0000
+ print('PASS material scene bridge retains the original Dart call and signal:',Path(planpath).name,flush=True)
+ workspace,workspace_end=target.extent(target.names['WorkspaceGetxController._folderClingController'][0])
+ scroll_target=target.names['MamlVisibilitySignals.setScrolling'][0][0]
+ gateway=address(symbols['material_workspace_scroll'])
+ call,=[at for at,raw,group in p['patches']
+        if group==2 and workspace<=at-base<workspace_end and len(raw)==8
+        and branch_target(int.from_bytes(bytes.fromhex(raw),'little'),at)==gateway]
+ assert address(symbols['material_scroll_target'])==base+scroll_target
+ assert branch_target(struct.unpack('<I',target.read(call-base,4))[0],call-base)==scroll_target
+ for scrolling in (True,False):
+  u=setup()
+  value=nil+(0x20 if scrolling else 0x30);u.reg_write(regs[2],value)
+  u.emu_start(call,base+scroll_target,count=2000)
+  assert u.reg_read(R.UC_ARM64_REG_PC)==base+scroll_target and u.reg_read(regs[30])==call+4
+  assert u.reg_read(regs[2])==value and u.reg_read(regs[15])==0x2f0000
+ print('PASS workspace scroll bridge observes both bools at the original Dart call:',Path(planpath).name,flush=True)
+ # The opening flag still reaches the stock reparent loop and keeps the
+ # original press-cache guard. Closing runs the stock release path.
+ prepare,size,_=target.names['SfWindowAnimImplementor.prepareIconLayers'][0]
+ release=target.names['SfWindowAnimImplementor.releaseIconLayers'][0][0]
+ precreate=target.names['SfWindowAnimImplementor._tryReusePreCreated'][0][0]
+ reparent=target.names['RustLibApiImpl.crateApiRecentsSfAnimAgentSfAnimAgentReparentIconToHome'][0][0]
+ def word(pc):return struct.unpack('<I',target.read(pc,4))[0]
+ def calls_to(callee):
+  return [pc for pc in range(prepare,prepare+size,4) if word(pc)&0xfc000000==0x94000000
+          and branch_target(word(pc),pc)==callee]
+ reuse,=calls_to(reparent)
+ press,=calls_to(precreate)
+ cleanup,=[pc for pc in calls_to(release) if reuse<pc<press]
+ (entry,code),=[(at-base,struct.unpack('<4I',bytes.fromhex(raw))) for at,raw,group in p['patches']
+                if group==2 and len(raw)==32 and prepare<=at-base<reuse]
+ assert entry<reuse and word(entry-4)&0xfff8001f==0x37200000
+ guard=press-20
+ assert code[:2]==(word(guard-8),word(guard-4))
+ assert branch_target(code[2],entry+8)==cleanup-8
+ resume=branch_target(code[3],entry+12)
+ assert entry+16<resume<reuse
+ for opening,destination in [(True,resume),(False,cleanup-8)]:
+  u=setup();q(u,u.reg_read(regs[29])+immediate(code[0]),nil+(0x20 if opening else 0x30))
+  assert struct.unpack('<I',u.mem_read(base+guard,4))[0]==word(guard)
+  u.emu_start(base+entry,base+destination,count=4)
+  assert u.reg_read(R.UC_ARM64_REG_PC)==base+destination
+ print('PASS existing SF return layers use the stock release and recapture path:',Path(planpath).name,flush=True)
  # Execute the optional badge pair with current pool/frame relocations. Only
  # the fresh text Color changes; shared white and unrelated objects stay intact.
  for alpha in [0.0,0.35,1.0]:
@@ -204,6 +260,28 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
   assert u.reg_read(R.UC_ARM64_REG_PC)==mark+4 and qi(u,image+15)==171
   assert qi(u,0x2fb000+immediate(original_word(mark)))==image
  print('PASS relocated scene slots, floor/ceil writeback, material stage and current capture scopes:',Path(planpath).name,flush=True)
+ # The relocated identity call must run the current ELF's leaf with the
+ # Dart thread, and the detached export must use the new scene/view slots.
+ u=setup();child,root,data,bounds=ns['scene'](u)
+ w(u,child-1,(cfg[3]<<12)|0x500);w(u,child+3,0)
+ w(u,root-1,(cfg[2]<<12)|0x700)
+ prepare_scene(u,child,root,bounds,True)
+ q(u,0x2fc008,address(0x19b0dc8))
+ thread=0x2f8000
+ u.reg_write(regs[26],thread);q(u,thread+0x8b0,17)
+ assert address(symbols['dart_layer_hash'])==base+target.names['_getHash'][0][0]
+ u.emu_start(address(symbols['root_gateway']),address(0xa02918),count=4000000)
+ assert qi(u,0x2f9ff8)==root and wi(u,child+3)
+ placement=0x2f0000-112+32
+ assert qi(u,placement+64)==child and wi(u,placement+72)==wi(u,child+3)
+ w(u,child+0x1f,nil);q(u,0x2f9ff8,child)
+ q(u,0x2fc008,address(0x1b136bc));q(u,0x2fb000+scene_view,nil)
+ ds(u,bounds+7,[0,0,60,60])
+ ds(u,data+0x17,[2.85,0,0,0,0,2.85,0,0,0,0,1,0,-69,-802,0,1])
+ u.emu_start(address(symbols['root_gateway']),address(0xa02918),count=4000000)
+ assert qi(u,0x2f9ff8)==child and qi(u,0x2fb000+scene_view)==2<<29
+ assert int(struct.unpack('<d',u.mem_read(bounds+7,8))[0])-1048576==69
+ print('PASS relocated Dart identity leaf and detached return geometry:',Path(planpath).name,flush=True)
  # Both SF routes preserve alpha for plain and child-filtered boundaries.
  # A material found after visiting a filtered sibling still needs the viewport.
  open_scopes=(0x19bf198,0x19c08e4)

@@ -10,7 +10,13 @@ from tools.build_env import CLANG
 CC=CLANG
 flags=['-DHG_ADAPTIVE','-Wl,--no-relax']if os.environ.get('HG_ADAPTIVE')else[]
 subprocess.run([str(CC),*flags,'-nostdlib','-static',f'-Wl,-T,{H/"boundary.ld"},-e,message,--build-id=none',str(H/'boundary.S'),'-o',str(H/'boundary.elf')],check=True)
-subprocess.run([str(CC),*flags,'-Oz','-ffreestanding','-fno-builtin','-fno-stack-protector','-fno-unwind-tables','-fno-asynchronous-unwind-tables','-fno-pic','-fno-pie','-ffunction-sections','-nostdlib','-static',f'-Wl,-T,{H/"layout.ld"},-e,capture_bridge,--build-id=none',str(H/'bridge.S'),str(H/'hooks.S'),str(H/'capture.c'),'-o',str(H/'capture.elf')],check=True)
+reference=Path(os.environ.get('HYPERGLASS_REFERENCE_DIR',ROOT/'fixtures/reference'))/'launcher-801027722/libapp.so'
+sys.path.insert(0,str(ROOT/'module/adaptive'))
+from model import Image
+reference_symbols=Image(reference).names
+hash_stub=reference_symbols['_getHash'][0][0]
+scroll_target=reference_symbols['MamlVisibilitySignals.setScrolling'][0][0]
+subprocess.run([str(CC),*flags,f'-Wl,--defsym,dart_layer_hash={hash_stub}',f'-Wl,--defsym,material_scroll_target={scroll_target}', '-Oz','-ffreestanding','-fno-builtin','-fno-stack-protector','-fno-unwind-tables','-fno-asynchronous-unwind-tables','-fno-pic','-fno-pie','-ffunction-sections','-nostdlib','-static',f'-Wl,-T,{H/"layout.ld"},-e,capture_bridge,--build-id=none',str(H/'bridge.S'),str(H/'hooks.S'),str(H/'capture.c'),'-o',str(H/'capture.elf')],check=True)
 source=ELFFile(open(Path(os.environ.get('HYPERGLASS_REFERENCE_DIR',ROOT/'fixtures/reference'))/'launcher-801027722/libapp.so','rb'))
 profile=json.loads((H.parent/'icons/profile.json').read_text());patches=profile['patches']
 def read(va,n):
@@ -33,14 +39,14 @@ for va in [0x19bf004,0x1b147a4]:patch(va,bytes.fromhex('1f2003d5'),'Use the comp
 linked=ELFFile(open(H/'capture.elf','rb'))
 limits={'.capture_root':0xb33300-0xb32838,'.widget_helpers':0xb33600-0xb33300,'.capture_meta':0xce29cc-0xce2770,'.hooks':0x11f3180-0x11f30a0,'.capture_small':0x11f3358-0x11f3180,'.limit_test':0x1811460-0x18113a0,'.bridge':0x19bfef0-0x19bfdb0,'.text_color':0x98bea4-0x98bdc0}
 limits['.badge']=64
-if flags:limits.update({'.capture_config':156,'.widget_spans':12,'.widget_wrap':96,'.widget_image_filter':20,'.maml_repaint':64})
+if flags:limits.update({'.capture_config':156,'.widget_spans':12,'.widget_wrap':96,'.widget_image_filter':20,'.maml_repaint':64,'.material_scene':64,'.material_scroll':64,'.detached_capture':4096})
 for sec in linked.iter_sections():
  if sec['sh_type']in ['SHT_REL','SHT_RELA']:assert sec['sh_size']==0
  if sec['sh_flags']&2 and sec['sh_size']:assert sec.name in limits,sec.name
 for name,limit in limits.items():
  sec=linked.get_section_by_name(name);code=sec.data();assert len(code)<=limit,(name,len(code),limit)
  # The badge section is a private adapter mapping, never an original ELF site.
- if name not in ('.badge','.widget_spans','.widget_wrap','.widget_image_filter','.maml_repaint'):
+ if name not in ('.badge','.widget_spans','.widget_wrap','.widget_image_filter','.maml_repaint','.material_scene','.material_scroll','.detached_capture'):
   for off in range(0,len(code),256):patch(sec['sh_addr']+off,code[off:off+256],'Allocation-free full-view capture and per-image crop metadata')
  print(name,len(code),'bytes')
 for va in [0xb32828,0xce275c,0x11f308c]:patch(va,bytes.fromhex('e00316aac0035fd6'),'Omit diagnostic string formatting to reserve relocation-free adapters')

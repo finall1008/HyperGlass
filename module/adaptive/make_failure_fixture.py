@@ -23,6 +23,25 @@ elif mode=='maml-repaint-layout':
  word=struct.unpack('<I',image.read(pc,4))[0]
  assert word==0xb8413020
  struct.pack_into('<I',raw,offset(pc),word+(4<<12))
+elif mode=='sf-return-layout':
+ # Losing the call edge makes the existing-layer exit ambiguous.
+ pc=0x1b14308
+ word=struct.unpack('<I',image.read(pc,4))[0]
+ reparent='RustLibApiImpl.crateApiRecentsSfAnimAgentSfAnimAgentReparentIconToHome'
+ assert branch_target(word,pc)==image.names[reparent][0][0]
+ struct.pack_into('<I',raw,offset(pc),0xd503201f)
+elif mode=='detached-capture-identity':
+ pc=image.names['_getHash'][0][0]+0x48
+ assert struct.unpack('<I',image.read(pc,4))[0]==0xc85f7c02
+ struct.pack_into('<I',raw,offset(pc),0xd503201f)
+elif mode=='workspace-scroll-layout':
+ pc=image.names['MamlVisibilitySignals.setScrolling'][0][0]+20
+ assert struct.unpack('<I',image.read(pc,4))[0]==0xf81e83a2
+ struct.pack_into('<I',raw,offset(pc),0xd503201f)
+elif mode=='material-scene-layout':
+ start,size,_=image.names['SceneAnimationSignalType._enumToString'][0]
+ pc,=[pc for pc in range(start,start+size,4) if struct.unpack('<I',image.read(pc,4))[0]==0xb840f022]
+ struct.pack_into('<I',raw,offset(pc),0xb8413022)
 elif mode=='badge-layout':
  at=offset(0x1749cfc);w=struct.unpack_from('<I',raw,at)[0];struct.pack_into('<I',raw,at,(w&~(511<<12))|(0x2f<<12))
 elif mode=='widget-layout':
@@ -33,6 +52,14 @@ elif mode=='icon-layout':
  struct.pack_into('<I',raw,at,(word&~(4095<<10))|(0x168<<10))
 elif mode=='engine-layout':
  at=offset(0xc2fc28);w=struct.unpack_from('<I',raw,at)[0];struct.pack_into('<I',raw,at,(w&~(4095<<10))|(4<<10))
+elif mode=='frame-info-layout':
+ at=offset(0xd5dca0);word=struct.unpack_from('<I',raw,at)[0]
+ assert immediate(word)==192
+ struct.pack_into('<I',raw,at,word+(16<<5))
+elif mode=='glass-cache-layout':
+ at=offset(0xd557e0);word=struct.unpack_from('<I',raw,at)[0]
+ assert word&0xffc003ff==0xf9400049 and immediate(word)==8
+ struct.pack_into('<I',raw,at,(word&~(4095<<10))|(2<<10))
 elif mode=='ambiguous':
  old=0xa030a4;new=0xb32838;raw[offset(new):offset(new)+36]=image.read(old,36)
  debug=image.elf.get_section_by_name('.gnu_debugdata');inner=bytearray(lzma.decompress(debug.data()))
