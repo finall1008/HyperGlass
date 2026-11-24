@@ -1,13 +1,13 @@
 SECTIONS {
- .message 0x1722030 : { *(.message) }
- .selector 0x1811320 : { *(.selector) }
- .initialize 0x1811360 : { *(.initialize) }
+ .message 0x1868e9c : { *(.message) }
+ .selector 0x2006320 : { *(.selector) }
+ .initialize 0x2006360 : { *(.initialize) }
  /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) }
 }
-message_return = 0x1722088;
-barrier = 0x1b56978;
-wrap_message = 0x1720f90;
-boundary_build = 0x14ebf5c;
-boundary_return = 0x14ebf80;
+message_return = 0x1868ef4;
+barrier = 0x1cea348;
+wrap_message = 0x1867c88;
+boundary_build = 0x15f14f0;
+boundary_return = 0x15f1514;
 
-hg_capture_config = 0xb33600;
+hg_capture_config = 0x2003600;

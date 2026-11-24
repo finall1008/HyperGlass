@@ -4,30 +4,18 @@ import json
 import os
 import subprocess
 import sys
-H=Path(__file__).resolve().parent;ROOT=H.parent;B=H/'.build';OUT=B/'host-tests';OUT.mkdir(exist_ok=True)
-REFS=Path(os.environ.get('HYPERGLASS_REFERENCE_DIR',ROOT/'fixtures/reference'))
+from test_cases import check_plan, report_compatibility, required_cases, run, runtime_plan_arguments
+H=Path(__file__).resolve().parent;B=H/'.build';OUT=B/'host-tests';OUT.mkdir(parents=True,exist_ok=True)
 cc=os.environ.get('CC','cc');cxx=os.environ.get('CXX','c++')
-def run(*arguments,**options):return subprocess.run(list(map(str,arguments)),check=True,**options)
 objects=[]
 for source in sorted((H/'third_party/xz').glob('*.c')):
     output=OUT/(source.stem+'.o');run(cc,'-O2','-DXZ_USE_CRC64','-DXZ_DEC_ARM64','-I'+str(H/'third_party/xz'),'-c',source,'-o',output);objects.append(output)
 binary=OUT/'test_resolver'
 run(cxx,'-std=c++17','-O2','-Wall','-Wextra','-Werror','-DXZ_USE_CRC64','-I'+str(H/'native'),'-I'+str(H/'third_party/xz'),'-I'+str(B),H/'native/test_resolver.cpp',H/'native/resolver.cpp',H/'native/elf_image.cpp',*objects,'-pthread','-o',binary)
-old=REFS/'launcher-801027722/libapp.so';new=REFS/'launcher-801029226/MiuiHome.apk';engine=REFS/'launcher-801027722/libhyper_os_flutter.so'
-run(sys.executable,H/'adaptive/make_future_fixture.py',old,OUT/'future.so')
-full=247
-disabled_groups={'core-layout':2,'scene-view-layout':2,'maml-repaint-layout':2,'sf-return-layout':2,'material-scene-layout':2,'detached-capture-identity':2,'workspace-scroll-layout':2,'widget-layout':4|16|64|128,'ambiguous':2,'badge-layout':32,'icon-layout':1}
-for mode in disabled_groups:run(sys.executable,H/'adaptive/make_failure_fixture.py',old,mode,OUT/(mode+'.so'))
-engine_failures=('engine-layout','frame-info-layout','glass-cache-layout')
-for mode in engine_failures:run(sys.executable,H/'adaptive/make_failure_fixture.py',engine,mode,OUT/(mode+'.so'))
-inputs=[('7722',old,0,full,''),('9226',new,0,full,'!/lib/arm64-v8a/libapp.so'),('engine',engine,1,2,''),('maml',REFS/'launcher-801027722/librust_maml_sdk.so',2,8,''),('future',OUT/'future.so',0,full,'')]
-inputs.extend((mode,OUT/(mode+'.so'),1,0,'')for mode in engine_failures)
-inputs.extend((name,OUT/(name+'.so'),0,full&~disabled,'')for name,disabled in disabled_groups.items())
-for name,file,index,ready,suffix in inputs:
+for name,file,index,ready,suffix in required_cases(OUT):
     plan=OUT/(name+'.json');run(binary,index,str(file)+suffix,plan,env=dict(os.environ,HG_EXPECT_READY=str(ready)))
-    parsed=json.loads(plan.read_text());assert parsed['ready']==ready
-    if name in disabled_groups:
-        assert all(not(group&disabled_groups[name])for _,_,group in parsed['patches']),name
-    if name in engine_failures:assert parsed['patches']==[]
-run(sys.executable,H/'adaptive/test_runtime_plans.py',OUT/'7722.json',old,OUT/'9226.json',REFS/'launcher-801029226/libapp.so',OUT/'future.json',OUT/'future.so')
-print('PASS host native resolver, old/new/APK fixtures, changed layouts, isolated failures and relocated ARM64 execution')
+    parsed=json.loads(plan.read_text());assert parsed['ready']==ready,name
+    check_plan(name,parsed)
+run(sys.executable,H/'adaptive/test_runtime_plans.py',*runtime_plan_arguments(OUT))
+report_compatibility(lambda file,suffix:subprocess.run([str(binary),'0',str(file)+suffix],capture_output=True,text=True).stdout)
+print('PASS host native resolver, reference ELF/APK, changed layouts, isolated failures and relocated ARM64 execution')

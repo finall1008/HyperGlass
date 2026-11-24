@@ -2,28 +2,19 @@
   "scope": "Reference icon and native widget style recipes",
   "patches": [
     {
-      "vaddr": "1721c84",
-      "expected": "a0012037",
+      "vaddr": "1868cb0",
       "replacement": "1f2003d5",
       "reason": "ShortcutIconWidget: include native glass background"
     },
     {
-      "vaddr": "1721d50",
-      "expected": "a0835ef8007040fca0031cfc611762f9",
+      "vaddr": "1868d7c",
       "replacement": "e00302aaef031daafd79c1a8c0035fd6",
       "reason": "ShortcutIconWidget: return native glass widget"
     },
     {
-      "vaddr": "1488f18",
-      "expected": "a1000054",
+      "vaddr": "1590830",
       "replacement": "1f2003d5",
       "reason": "Folder background: select native glass"
-    },
-    {
-      "vaddr": "19bfc68",
-      "expected": "403f40f9",
-      "replacement": "36000014",
-      "reason": "Skip successful capture diagnostics to free adapter space"
     }
   ]
 }

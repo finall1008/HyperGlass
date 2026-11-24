@@ -371,7 +371,11 @@ def transition(video, returning, spec, reference):
         x0, y0, x1, y1 = motion_box(spec["box"])
         images = frames[candidates, y0:y1, x0:x1].astype(np.int16)
         expected = np.asarray(reference.resize((x1 - x0, y1 - y0), Image.Resampling.BOX), dtype=np.int16)
-        rank = np.mean(np.abs(images - expected), axis=(1, 2, 3))
+        keep = Image.new("L", reference.size, 255)
+        for rect in spec.get("ignore", ()):
+            keep.paste(0, rect)
+        keep = np.asarray(keep.resize((x1 - x0, y1 - y0), Image.Resampling.NEAREST)) > 0
+        rank = np.mean(np.abs(images - expected)[:, keep], axis=(1, 2))
     frame = int(candidates[np.argmin(rank)])
     png = decode(video, "-vf", f"{timing_filter}select=eq(n\\,{frame})", *output_timing,
                  "-frames:v", "1", "-c:v", "png", "-f", "image2pipe", "-")
@@ -633,6 +637,28 @@ def crop(image, box, ignore=()):
     return result
 
 
+def masked(reference, spec):
+    """Apply the spec's ignored rectangles to a stored baseline crop."""
+    return crop(reference, (0, 0, *reference.size), spec.get("ignore", ()))
+
+
+def neutral_foreground(image, spec):
+    """Check that the bright glyph in a crop is drawn without chroma."""
+    limits = spec["neutral"]
+    pixels = np.asarray(image, dtype=np.int16)
+    low = pixels.min(axis=2)
+    glyph = low >= limits["min_rgb"]
+    coverage = float(glyph.mean())
+    chroma = float((pixels.max(axis=2) - low)[glyph].mean()) if glyph.any() else 255.0
+    return {
+        "metric": "neutral_foreground",
+        "pass": coverage >= limits["min_coverage"] and chroma <= limits["max_mean_chroma"],
+        "coverage": round(coverage, 4),
+        "mean_chroma": round(chroma, 3),
+        **limits,
+    }
+
+
 def pixel_diff(current, reference):
     difference = np.abs(np.asarray(current, dtype=np.int16) - np.asarray(reference, dtype=np.int16))
     mean = float(np.mean(difference))
@@ -691,6 +717,10 @@ def capture_scene(emulator, profile, output, work, name, scene, baseline):
         save(f"{name}-rest", rest, rest_spec)
     for label, spec in scene.get("details", {}).items():
         save(f"{name}-{label}", rest, spec)
+        if "neutral" in spec:
+            result = neutral_foreground(crop(rest, spec["box"]), spec)
+            results[f"{name}-{label}"] = result
+            print("PASS" if result["pass"] else "FAIL", f"{name}-{label}", result, flush=True)
     errors = {}
     best = {}
     accepted = set()
@@ -749,7 +779,7 @@ def capture_scene(emulator, profile, output, work, name, scene, baseline):
             reference = None
             if baseline:
                 with Image.open(baseline / f"{key}.png") as stored:
-                    reference = stored.convert("RGB")
+                    reference = masked(stored.convert("RGB"), spec)
             try:
                 image, details = transition(clip, returning, spec, reference)
                 score = 0
@@ -793,8 +823,9 @@ def capture_scene(emulator, profile, output, work, name, scene, baseline):
     return results
 
 
-def compare(name, output, baseline, limits):
-    reference = Image.open(baseline / f"{name}.png").convert("RGB")
+def compare(name, output, baseline, spec):
+    limits = spec["limits"]
+    reference = masked(Image.open(baseline / f"{name}.png").convert("RGB"), spec)
     current = Image.open(output / f"{name}.png").convert("RGB")
     if reference.size != current.size:
         return {"pass": False, "reason": f"Crop dimensions changed from {reference.size} to {current.size}"}
@@ -933,7 +964,7 @@ def main():
                         label = key.removeprefix(f"{name}-")
                         spec = (scene.get("before_enter", {}).get(label) or scene.get("details", {}).get(label)
                                 or scene.get(label, scene.get("rest", scene)))
-                        result.update(compare(key, args.output, baseline, spec["limits"]))
+                        result.update(compare(key, args.output, baseline, spec))
                         print("PASS" if result["pass"] else "FAIL", key, result, flush=True)
                 report["scenes"].update(results)
                 report["completed_scenes"].append(name)

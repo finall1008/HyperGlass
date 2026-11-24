@@ -7,14 +7,14 @@ from model import branch_target,immediate
 image=Image(sys.argv[1]);raw=bytearray(Path(sys.argv[1]).read_bytes());mode=sys.argv[2]
 def offset(va):return next(s['p_offset']+va-s['p_vaddr']for s in image.elf.iter_segments()if s['p_type']=='PT_LOAD'and s['p_vaddr']<=va<s['p_vaddr']+s['p_filesz'])
 if mode=='core-layout':
- at=offset(0xa03338);w=struct.unpack_from('<I',raw,at)[0];struct.pack_into('<I',raw,at,(w&~(511<<12))|(0x4b<<12))
+ at=offset(0xab1b94);w=struct.unpack_from('<I',raw,at)[0];struct.pack_into('<I',raw,at,(w&~(511<<12))|(0x4b<<12))
 elif mode=='scene-view-layout':
- # Only the ceil arm loses the view-ID input. Patching one arm would
+ # Only the ceil arm loses the view-ID input (x7). Patching one arm would
  # let the Dart and native snapshot stages disagree.
- pc=0x191a8a0
+ pc=0x1a7f22c
  at=offset(pc);word=struct.unpack_from('<I',raw,at)[0]
- bounds=immediate(struct.unpack('<I',image.read(0x191a610,4))[0])
- assert word&0xffe00fff==0xf84003a6
+ bounds=immediate(struct.unpack('<I',image.read(0x1a7ef94,4))[0])
+ assert word&0xffe00fff==0xf84003a7
  struct.pack_into('<I',raw,at,(word&~(511<<12))|((bounds&511)<<12))
 elif mode=='maml-repaint-layout':
  # A changed compact-map cursor must stop the SF adapter before it reads
@@ -25,7 +25,7 @@ elif mode=='maml-repaint-layout':
  struct.pack_into('<I',raw,offset(pc),word+(4<<12))
 elif mode=='sf-return-layout':
  # Losing the call edge makes the existing-layer exit ambiguous.
- pc=0x1b14308
+ pc=0x1c8979c
  word=struct.unpack('<I',image.read(pc,4))[0]
  reparent='RustLibApiImpl.crateApiRecentsSfAnimAgentSfAnimAgentReparentIconToHome'
  assert branch_target(word,pc)==image.names[reparent][0][0]
@@ -43,9 +43,9 @@ elif mode=='material-scene-layout':
  pc,=[pc for pc in range(start,start+size,4) if struct.unpack('<I',image.read(pc,4))[0]==0xb840f022]
  struct.pack_into('<I',raw,offset(pc),0xb8413022)
 elif mode=='badge-layout':
- at=offset(0x1749cfc);w=struct.unpack_from('<I',raw,at)[0];struct.pack_into('<I',raw,at,(w&~(511<<12))|(0x2f<<12))
+ at=offset(0x188ce08);w=struct.unpack_from('<I',raw,at)[0];struct.pack_into('<I',raw,at,(w&~(511<<12))|(0x2f<<12))
 elif mode=='widget-layout':
- pc=0xc1e528;target=branch_target(struct.unpack('<I',image.read(pc,4))[0],pc);at=offset(target);w=struct.unpack_from('<I',raw,at)[0];struct.pack_into('<I',raw,at,w^(0x10<<5))
+ pc=0xcd39a4;target=branch_target(struct.unpack('<I',image.read(pc,4))[0],pc);at=offset(target);w=struct.unpack_from('<I',raw,at)[0];struct.pack_into('<I',raw,at,w^(0x10<<5))
 elif mode=='icon-layout':
  frame=image.names['ImageFilterGroup.processAll'][0][0]+8
  at=offset(frame);word=struct.unpack_from('<I',raw,at)[0]
@@ -61,7 +61,7 @@ elif mode=='glass-cache-layout':
  assert word&0xffc003ff==0xf9400049 and immediate(word)==8
  struct.pack_into('<I',raw,at,(word&~(4095<<10))|(2<<10))
 elif mode=='ambiguous':
- old=0xa030a4;new=0xb32838;raw[offset(new):offset(new)+36]=image.read(old,36)
+ old=0xab1878;new=0xbf6a6c;raw[offset(new):offset(new)+36]=image.read(old,36)
  debug=image.elf.get_section_by_name('.gnu_debugdata');inner=bytearray(lzma.decompress(debug.data()))
  shoff=struct.unpack_from('<Q',inner,40)[0];count=struct.unpack_from('<H',inner,60)[0]
  for i in range(count):

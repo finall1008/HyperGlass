@@ -104,8 +104,8 @@ class Model:
   values=words(self.image.read(start,end-start));masks=tuple(control_mask(w,arm_mask(w,frames))if control else arm_mask(w,frames)for w in values)
   a=Anchor(va,s[2],va-s[0],(va-start)//4,values,masks)
   index=len(self.anchors);self.by_va[va]=index;self.anchors.append(a)
-  if control and s[2]=='MiuiWidgetGetxController.handleClick'and va in [0x148083c,0x1480844]:
-   a.mode=2;a.callee='BlurUtilities.isGlassMaterialSupported';a.delta=-4 if va==0x148083c else 4
+  if control and s[2]=='MiuiWidgetGetxController.handleClick'and va in [0x1588534,0x158853c]:
+   a.mode=2;a.callee='BlurUtilities.isGlassMaterialSupported';a.delta=-4 if va==0x1588534 else 4
   if control and s[2]=='TextureBox.paint':a.mode=3;a.delta=112
   if va in self.image.imports:a.mode=4;a.callee=self.image.imports[va]
   # Allocator/outlined stubs have no own Dart debug symbol. A named caller's

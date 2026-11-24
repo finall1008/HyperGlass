@@ -18,7 +18,7 @@ HyperOS 系统桌面的 LSPosed 模块，提供单色玻璃图标、文件夹、
 
 运行时从当前 ELF、Dart 方法符号、ARM64 指令的寄存器关系和调用边定位，类编号、字段和栈槽随当前二进制推导。支持在校验通过时适配扩展的栈帧和迁移到同类辅助方法的代码。支持 APK 内直接映射的库，以及原生 Hook 分割后的连续可执行映射。各功能组校验失败时停用对应组并记录原因。
 
-参考地址用于生成定位规则。版本号、Build ID 和文件哈希不参与运行时启用判断。已覆盖 Launcher 801027722、801029226 和地址、字段、类编号变化样本。9226 和 8.01.03.308 已在真机与模拟器验证，9239 和 9261 已在模拟器验证。对照 9239，9261 上的矢量小组件、普通及带 tint 的 TextView 复合图标在单色开启和关闭时均通过逐像素对照。新版规则沿当前绘制调用定位滤镜，并复用桌面的物理密度换算保持 Android 小组件布局。
+定位规则从参考桌面 801030308（8.01.03.308）生成，版本号、Build ID 和文件哈希不参与运行时启用判断。参考桌面及其地址、字段、类编号变化样本必须全部就绪；旧桌面只报告兼容结果，不阻塞构建。当前规则在 9239、9226 上保留可选矢量图形滤镜以外的全部功能，在 7722 上保留图标、动画和角标。9226 和 8.01.03.308 已在真机与模拟器验证，9239 和 9261 已在模拟器验证。对照 9239，9261 上的矢量小组件、普通及带 tint 的 TextView 复合图标在单色开启和关闭时均通过逐像素对照。新版规则沿当前绘制调用定位滤镜，并复用桌面的物理密度换算保持 Android 小组件布局。
 
 ## 源码
 
@@ -40,11 +40,9 @@ HyperOS 系统桌面的 LSPosed 模块，提供单色玻璃图标、文件夹、
 
 先将原始参考文件放到 `fixtures/reference`，或通过 `HYPERGLASS_REFERENCE_DIR` 指定同结构目录：
 
-- `launcher-801027722/libapp.so`
-- `launcher-801027722/libhyper_os_flutter.so`
-- `launcher-801027722/librust_maml_sdk.so`
-- `launcher-801029226/MiuiHome.apk`
-- `launcher-801029226/libapp.so`
+- `launcher-801030308/MiuiHome.apk`、`launcher-801030308/libapp.so`：参考桌面
+- `launcher-801027722/libhyper_os_flutter.so`、`launcher-801027722/librust_maml_sdk.so`：引擎与 MAML 参考库
+- 可选兼容样本：`launcher-801029239/MiuiHome.apk`、`launcher-801029226/MiuiHome.apk`、`launcher-801027722/libapp.so`
 
 这些文件单独保存在私有 `build-inputs-v1` Release，供 CI 下载，不进入 Git 历史。
 
@@ -63,7 +61,7 @@ export PATH="$JAVA_HOME/bin:$PATH"
 
 ## CI 发布
 
-推送 `v` 开头的版本标签，或运行 Release 工作流，即可执行离线适配器检查、native 解析器及其重定位后 ARM64 代码测试、签名与 APK 清理检查，然后发布正式 Release。
+推送 `v` 开头的版本标签，或运行 Release 工作流，即可执行离线适配器检查、参考桌面的 native 解析器及其重定位后 ARM64 代码测试、旧桌面兼容报告、签名与 APK 清理检查，然后发布正式 Release。
 
 工作流使用与本地相同的 release key。私钥和密码保存在仓库 Actions Secrets：`RELEASE_JKS_BASE64`、`RELEASE_STORE_PASSWORD`、`RELEASE_KEY_PASSWORD`、`RELEASE_KEY_ALIAS`。构建强制核对公开证书指纹，缺失配置直接失败。
 

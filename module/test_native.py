@@ -1,46 +1,32 @@
 """Run adaptive resolution and patch-safety tests in standalone Android processes."""
 from pathlib import Path
-import os,subprocess,sys
-H=Path(__file__).resolve().parent;ROOT=H.parent;REFS=Path(os.environ.get('HYPERGLASS_REFERENCE_DIR',ROOT/'fixtures/reference'));B=H/'.build'
+import json,subprocess,sys
+H=Path(__file__).resolve().parent;ROOT=H.parent;B=H/'.build'
 sys.path.insert(0,str(ROOT))
 from tools.build_env import TOOLCHAIN as T
+from test_cases import check_plan,report_compatibility,required_cases,run,runtime_plan_arguments
 if len(sys.argv)!=2:raise SystemExit('Usage: .venv/bin/python module/test_native.py ADB_SERIAL')
 ADB=['timeout','45','adb','-s',sys.argv[1]];REMOTE='/data/local/tmp/hyperglass-adaptive-tests';OUT=B/'native-tests';OUT.mkdir(exist_ok=True)
-def run(*args,**kw):return subprocess.run(list(map(str,args)),check=True,**kw)
 def compile_test(name,cpp,objects=()):
  compiler=T/('aarch64-linux-android35-clang++'if cpp else'aarch64-linux-android35-clang')
  source=H/('native/'+name+('.cpp'if cpp else'.c'));binary=OUT/name
  run(compiler,'-std=c++17'if cpp else'-std=c11','-O2','-Wall','-Wextra','-Werror',*(['-static-libstdc++']if cpp else[]),'-I'+str(H/'native'),'-I'+str(B),source,*objects,'-llog','-ldl','-o',binary)
  return binary
 bins=[compile_test('test_runtime',False,[B/'assets.o']),compile_test('test_runtime_tick',True),compile_test('test_page_guard',True),compile_test('test_material',True,[B/'elf_image.o',*sorted(B.glob('xz_*.o'))]),compile_test('test_resolver',True,[B/'elf_image.o',B/'resolver.o',*sorted(B.glob('xz_*.o'))])]
-old=REFS/'launcher-801027722/libapp.so';new=REFS/'launcher-801029226/MiuiHome.apk'
-fixtures={}
-full=247
-disabled_groups={'core-layout':2,'scene-view-layout':2,'maml-repaint-layout':2,'sf-return-layout':2,'material-scene-layout':2,'detached-capture-identity':2,'workspace-scroll-layout':2,'widget-layout':4|16|64|128,'ambiguous':2,'badge-layout':32,'icon-layout':1}
-run(sys.executable,H/'adaptive/make_future_fixture.py',old,OUT/'future.so');fixtures['future']=OUT/'future.so'
-for mode in disabled_groups:
- run(sys.executable,H/'adaptive/make_failure_fixture.py',old,mode,OUT/(mode+'.so'));fixtures[mode]=OUT/(mode+'.so')
-engine=REFS/'launcher-801027722/libhyper_os_flutter.so'
-engine_failures=('engine-layout','frame-info-layout','glass-cache-layout')
-for mode in engine_failures:run(sys.executable,H/'adaptive/make_failure_fixture.py',engine,mode,OUT/(mode+'.so'))
+cases=required_cases(OUT)
 run(*ADB,'shell','mkdir','-p',REMOTE)
 try:
  for binary in bins:run(*ADB,'push',binary,REMOTE+'/'+binary.name)
- run(*ADB,'shell',REMOTE+'/test_runtime');run(*ADB,'shell',REMOTE+'/test_runtime_tick');run(*ADB,'shell',REMOTE+'/test_page_guard');run(*ADB,'shell',REMOTE+'/test_material')
- inputs=[('7722',old,0,full,''),('9226',new,0,full,'!/lib/arm64-v8a/libapp.so'),('engine',REFS/'launcher-801027722/libhyper_os_flutter.so',1,2,''),('maml',REFS/'launcher-801027722/librust_maml_sdk.so',2,8,'')]
- inputs.extend((name,file,0,full&~disabled_groups.get(name,0),'')for name,file in fixtures.items())
- inputs.extend((mode,OUT/(mode+'.so'),1,0,'')for mode in engine_failures)
- for name,file,index,ready,suffix in inputs:
+ for test in ['test_runtime','test_runtime_tick','test_page_guard','test_material']:run(*ADB,'shell',REMOTE+'/'+test)
+ for name,file,index,ready,suffix in cases:
   target=REMOTE+'/'+name+file.suffix;plan=REMOTE+'/'+name+'.json'
   run(*ADB,'push',file,target);run(*ADB,'shell',f'HG_EXPECT_READY={ready}',REMOTE+'/test_resolver',index,target+suffix,plan)
   run(*ADB,'pull',plan,OUT/(name+'.json'))
-  if name in disabled_groups:
-   import json
-   data=json.loads((OUT/(name+'.json')).read_text())
-   assert all(not(group&disabled_groups[name])for _,_,group in data['patches']),name
-  if name in engine_failures:
-   import json
-   assert json.loads((OUT/(name+'.json')).read_text())['patches']==[]
- run(sys.executable,H/'adaptive/test_runtime_plans.py',OUT/'7722.json',old,OUT/'9226.json',REFS/'launcher-801029226/libapp.so',OUT/'future.json',OUT/'future.so')
+  check_plan(name,json.loads((OUT/(name+'.json')).read_text()))
+ def resolve(file,suffix):
+  target=REMOTE+'/compat'+file.suffix;run(*ADB,'push',file,target)
+  return subprocess.run([*ADB,'shell',REMOTE+'/test_resolver','0',target+suffix],capture_output=True,text=True).stdout
+ report_compatibility(resolve)
+ run(sys.executable,H/'adaptive/test_runtime_plans.py',*runtime_plan_arguments(OUT))
 finally:run(*ADB,'shell','rm','-rf',REMOTE)
-print('PASS native concurrency, page guard, old/new/APK sources, unseen layout changes and isolated feature failures')
+print('PASS native concurrency, page guard, reference ELF/APK, unseen layout changes and isolated feature failures')

@@ -418,7 +418,7 @@ extern "C" unsigned hg_runtime_tick(const char*phase){
  bool snapshots=(images[0].result.ready&2)&&(images[1].result.ready&2);
  if(snapshots)snapshots=hg::install_material_hooks(images[1].base,*hg_programs[1],images[1].result)&&hg::install_backdrop_stream_hooks();
  if(snapshots&&!original_dispatch){
-  uintptr_t target=hg::adapter_address(images[0].result,0xce2770);
+  uintptr_t target=hg::adapter_address(images[0].result,0x2004770);
   snapshots=target&&hg_install_native_hook((void*)target,(void*)export_dispatch,(void**)&original_dispatch)==0&&original_dispatch;
  }
  std::vector<hg_patch>batch;unsigned ready=0;bool settings_pending=false;

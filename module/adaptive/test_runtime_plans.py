@@ -102,7 +102,7 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
   ds(u,text+7,[alpha,1,1,1]);ds(u,white+7,[1,1,1,1])
   before=bytes(u.mem_read(white-1,48));u.reg_write(regs[0],text)
   saved=[u.reg_read(r)for r in regs];nzcv=u.reg_read(R.UC_ARM64_REG_NZCV)
-  u.emu_start(address(0x148af68),address(0x148af6c),count=100)
+  u.emu_start(address(0x1592d58),address(0x1592d5c),count=100)
   assert struct.unpack('<4d',u.mem_read(text+7,32))==(alpha,0,0,0)
   replay=struct.unpack('<I',u.mem_read(address(symbols['badge_text_replay']),4))[0]
   assert qi(u,saved[29]+immediate(replay))==text
@@ -110,14 +110,14 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
   add,load=struct.unpack('<2I',u.mem_read(address(symbols['badge_white_pool']),8))
   q(u,0x300000+immediate(add)+immediate(load),white)
   u.reg_write(regs[1],decoration);saved=[u.reg_read(r)for r in regs]
-  u.emu_start(address(0x148b0a4),address(0x148b0a8),count=100)
+  u.emu_start(address(0x1592e94),address(0x1592e98),count=100)
   assert u.reg_read(regs[0])==white
   assert all(u.reg_read(r)==saved[i]for i,r in enumerate(regs)if i not in [0,16])
   assert bytes(u.mem_read(white-1,48))==before and u.reg_read(R.UC_ARM64_REG_NZCV)==nzcv
  print('PASS optional badge black text alpha, white background, shared constants and current pool/frame relocations:',Path(planpath).name,flush=True)
  # The flight source distinguishes duplicate icons in different containers.
  # Reuse the original component/user interpolation and its GC return PCs.
- tail=address(0x11f8168);start,size,_=target.names['AppInfoModel.getcomponentNameString'][0]
+ tail=address(0x942184);start,size,_=target.names['AppInfoModel.getcomponentNameString'][0]
  calls=[(pc,branch_target(int.from_bytes(target.read(pc,4),'little'),pc))for pc in range(tail-base,start+size,4)if int.from_bytes(target.read(pc,4),'little')&0xfc000000==0x94000000]
  allocate=calls[0];interpolate=next(call for call in calls if call[1]==target.names['_StringBase._interpolate'][0][0])
  separator_load=next(int.from_bytes(target.read(pc,4),'little')for pc in range(tail-base,interpolate[0],4)if int.from_bytes(target.read(pc,4),'little')&0xffc003ff==0xf9400370)
@@ -151,13 +151,13 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
     seen.append('interpolate');u.reg_write(regs[0],result)
    elif pc==0x3f0000:
     assert u.reg_read(regs[1])==model
-    assert u.reg_read(regs[30])==address(0x1b14738)
+    assert u.reg_read(regs[30])==address(0x1c89bcc)
     seen.append('canonical');u.reg_write(regs[0],result)
    else:return
    u.reg_write(R.UC_ARM64_REG_PC,u.reg_read(regs[30]))
   u.hook_add(UC_HOOK_CODE,source_call)
-  u.emu_start(address(0x1b14734),address(0x1b14738),count=10000)
-  assert u.reg_read(R.UC_ARM64_REG_PC)==address(0x1b14738)
+  u.emu_start(address(0x1c89bc8),address(0x1c89bcc),count=10000)
+  assert u.reg_read(R.UC_ARM64_REG_PC)==address(0x1c89bcc)
   assert u.reg_read(regs[0])==result and u.reg_read(regs[29])==fp and u.reg_read(regs[15])==sp
   assert seen==(['allocate','interpolate']if recommended else['canonical'])
  print('PASS recommendation source/user tags; ordinary/desktop dispatch and original Dart safepoints:',Path(planpath).name,flush=True)
@@ -180,10 +180,10 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
     assert u.reg_read(regs[1])==boundary
     assert any(qi(u,fp+off)==nil+0x30 for off in range(-1024,0,8))
   print('PASS current attached boundaries replace cached/static flight images on both animation paths:',Path(planpath).name,flush=True)
- u=setup();cfg=struct.unpack('<31I',u.mem_read(address(0xb33600),124))
- scene_layer,scene_bounds,scene_round,scene_view=struct.unpack('<4i',u.mem_read(address(0xb33600)+124,16))
- clip,opacity,rrect,color_filter=struct.unpack('<4I',u.mem_read(address(0xb33600)+140,16))
- scene_return=address(0x191a61c)
+ u=setup();cfg=struct.unpack('<31I',u.mem_read(address(0x2003600),124))
+ scene_layer,scene_bounds,scene_round,scene_view=struct.unpack('<4i',u.mem_read(address(0x2003600)+124,16))
+ clip,opacity,rrect,color_filter=struct.unpack('<4I',u.mem_read(address(0x2003600)+140,16))
+ scene_return=address(0x1a7efa0)
  def original_word(pc):return struct.unpack('<I',target.read(pc-base,4))[0]
  assert [scene_layer,scene_bounds,scene_round]==[immediate(original_word(scene_return+offset))for offset in (-16,-12,8)]
  def prepare_scene(u,child,root,bounds,floor):
@@ -218,13 +218,13 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
   empty=address(symbols['android_empty_widget']);add,ldr=struct.unpack('<2I',u.mem_read(empty,8))
   pool_offset=((add>>10)&4095)*(4096 if add&(1<<22)else 1)+((ldr>>10)&4095)*8
   q(u,0x300000+pool_offset,heap+0x3e001)
-  hidden=case in ['plate','color','cloned-view','layout-child'];end=0x400000 if hidden else address(0x10d4bc0)+4
+  hidden=case in ['plate','color','cloned-view','layout-child'];end=0x400000 if hidden else address(0x11971e4)+4
   u.emu_start(address(symbols['android_image_plate']),end,count=10000)
   assert u.reg_read(R.UC_ARM64_REG_PC)==end,case
   if hidden:assert u.reg_read(regs[0])==heap+0x3e001
   assert bytes(u.mem_read(heap+0x20000,0x9000))==before,case
  print('PASS native relocated shape background detection; photos, controls, nested panels and provider state retained:',Path(planpath).name,flush=True)
- for kind,scope,floor in [(1,0x19b0dc8,True),(2,0x1b136bc,False),(3,0x199c894,True)]:
+ for kind,scope,floor in [(1,0x1b25bec,True),(2,0x1c887e4,False),(3,0x1b18ac0,True)]:
   u=setup();child,root,data,bounds=ns['scene'](u,floor=floor)
   w(u,child-1,(cfg[3]<<12)|0x500);w(u,root-1,(cfg[2]<<12)|0x700)
   picture=heap+0x13001
@@ -237,7 +237,7 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
   for i in range(32):u.reg_write(getattr(R,f'UC_ARM64_REG_Q{i}'),0x112233445566778899aabbccddeeff00+i)
   vectors=[u.reg_read(getattr(R,f'UC_ARM64_REG_Q{i}'))for i in range(32)]
   u.reg_write(R.UC_ARM64_REG_NZCV,0xa0000000)
-  u.emu_start(address(symbols['root_gateway']),address(0xa02918),count=4000000)
+  u.emu_start(address(symbols['root_gateway']),address(0x9e2744),count=4000000)
   assert u.reg_read(R.UC_ARM64_REG_NZCV)==0xa0000000
   assert qi(u,0x2f9ff8)==root
   assert wi(u,picture+0x23)==(nil+0x20)&0xffffffff
@@ -247,7 +247,7 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
   rounding=math.floor if floor else math.ceil
   assert rounding((b[2]-b[0])*2.85)==1120 and rounding((b[3]-b[1])*2.85)==2436
   # Use the live frame chain and shifted parent slots in the ancestor hook.
-  q(u,0x2f9000,0x2fa000);q(u,0x2f9008,address(0xa02928))
+  q(u,0x2f9000,0x2fa000);q(u,0x2f9008,address(0x9e2754))
   u.reg_write(regs[29],0x2f9000);u.reg_write(regs[30],0x3f0000);u.reg_write(regs[0],child)
   u.emu_start(address(symbols['limit_test']),0x3f0000,count=2000)
   assert u.reg_read(regs[16])==1
@@ -255,7 +255,7 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
   image,native=heap+0x11001,heap+0x11101
   w(u,image+7,native);q(u,image+15,1120);q(u,image+23,2436)
   u.reg_write(regs[29],0x2fb000);u.reg_write(regs[0],image)
-  mark=address(0x191a74c if floor else 0x191a8b8)
+  mark=address(0x1a7f0d4 if floor else 0x1a7f244)
   u.emu_start(mark,mark+4,count=10000)
   assert u.reg_read(R.UC_ARM64_REG_PC)==mark+4 and qi(u,image+15)==171
   assert qi(u,0x2fb000+immediate(original_word(mark)))==image
@@ -266,26 +266,26 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
  w(u,child-1,(cfg[3]<<12)|0x500);w(u,child+3,0)
  w(u,root-1,(cfg[2]<<12)|0x700)
  prepare_scene(u,child,root,bounds,True)
- q(u,0x2fc008,address(0x19b0dc8))
+ q(u,0x2fc008,address(0x1b25bec))
  thread=0x2f8000
  u.reg_write(regs[26],thread);q(u,thread+0x8b0,17)
  assert address(symbols['dart_layer_hash'])==base+target.names['_getHash'][0][0]
- u.emu_start(address(symbols['root_gateway']),address(0xa02918),count=4000000)
+ u.emu_start(address(symbols['root_gateway']),address(0x9e2744),count=4000000)
  assert qi(u,0x2f9ff8)==root and wi(u,child+3)
  placement=0x2f0000-112+32
  assert qi(u,placement+64)==child and wi(u,placement+72)==wi(u,child+3)
  w(u,child+0x1f,nil);q(u,0x2f9ff8,child)
- q(u,0x2fc008,address(0x1b136bc));q(u,0x2fb000+scene_view,nil)
+ q(u,0x2fc008,address(0x1c887e4));q(u,0x2fb000+scene_view,nil)
  ds(u,bounds+7,[0,0,60,60])
  ds(u,data+0x17,[2.85,0,0,0,0,2.85,0,0,0,0,1,0,-69,-802,0,1])
- u.emu_start(address(symbols['root_gateway']),address(0xa02918),count=4000000)
+ u.emu_start(address(symbols['root_gateway']),address(0x9e2744),count=4000000)
  assert qi(u,0x2f9ff8)==child and qi(u,0x2fb000+scene_view)==2<<29
  assert int(struct.unpack('<d',u.mem_read(bounds+7,8))[0])-1048576==69
  print('PASS relocated Dart identity leaf and detached return geometry:',Path(planpath).name,flush=True)
  # Both SF routes preserve alpha for plain and child-filtered boundaries.
  # A material found after visiting a filtered sibling still needs the viewport.
- open_scopes=(0x19bf198,0x19c08e4)
- return_scopes=(0x1b1495c,0x1b15874)
+ open_scopes=(0x1b48494,0x1b49f2c)
+ return_scopes=(0x1c89e44,0x1c8ae94)
  cases=[(scope,closing,shape)
         for closing,scopes in ((False,open_scopes),(True,return_scopes))
         for scope in scopes for shape in ('plain','filtered','material')]
@@ -308,11 +308,11 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
    w(u,layer+0x1f,parent);w(u,layer+0x37,sibling);w(u,layer+0x47,descendant)
   prepare_scene(u,child,root,bounds,True)
   q(u,0x2fc008,address(scope))
-  if closing:q(u,0x2fd008,address(0x1b136bc))
+  if closing:q(u,0x2fd008,address(0x1c887e4))
   original_bounds=bytes(u.mem_read(bounds+7,32))
   original_transform=bytes(u.mem_read(data+0x17,128))
-  u.emu_start(address(symbols['root_gateway']),address(0xa02918),count=4000000)
-  assert u.reg_read(R.UC_ARM64_REG_PC)==address(0xa02918)
+  u.emu_start(address(symbols['root_gateway']),address(0x9e2744),count=4000000)
+  assert u.reg_read(R.UC_ARM64_REG_PC)==address(0x9e2744)
   if shape=='material':
    assert qi(u,0x2f9ff8)==root and qi(u,0x2fb000+scene_view)==(2 if closing else 1)<<29
   else:
@@ -325,33 +325,33 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
  w(u,child-1,(cfg[3]<<12)|0x500);w(u,root-1,(cfg[2]<<12)|0x700)
  if cfg[10]!=0x5b:w(u,heap+0x10701+0x5b,nil)
  w(u,heap+0x10701+cfg[10],heap+0x10801)
- prepare_scene(u,child,root,bounds,True);q(u,0x2fc008,address(0x19b0dc8))
- u.emu_start(address(symbols['root_gateway']),address(0xa02918),count=4000000)
+ prepare_scene(u,child,root,bounds,True);q(u,0x2fc008,address(0x1b25bec))
+ u.emu_start(address(symbols['root_gateway']),address(0x9e2744),count=4000000)
  image,native,clone=heap+0x11001,heap+0x11101,heap+0x11201
  w(u,image+7,native);q(u,image+15,1120);q(u,image+23,2436);u.reg_write(regs[29],0x2fb000);u.reg_write(regs[0],image)
- u.emu_start(address(symbols['mark_floor']),address(0x191a750),count=10000)
+ u.emu_start(address(symbols['mark_floor']),address(0x1a7f0d8),count=10000)
  assert qi(u,image+15)==171 and wi(u,image+11)>>25==0x15
  u.reg_write(regs[29],0x2fd000);u.reg_write(regs[1],image);u.reg_write(regs[2],171)
- u.emu_start(address(symbols['clone_pack']),address(0xa1e60c),count=1000);packed=qi(u,0x2fcff0)
+ u.emu_start(address(symbols['clone_pack']),address(0xa10560),count=1000);packed=qi(u,0x2fcff0)
  w(u,clone+7,native);q(u,clone+23,171);u.reg_write(regs[1],packed);u.reg_write(regs[3],clone)
- u.emu_start(address(symbols['clone_unpack']),address(0xa1e638),count=1000)
+ u.emu_start(address(symbols['clone_unpack']),address(0xa1058c),count=1000)
  assert wi(u,clone+11)==wi(u,image+11)
  buffer=0x50000000;u.mem_map(buffer,0x1000000);raw=bytearray(1120*2436*4)
  for row in range(802,973):
   for col in range(69,240):struct.pack_into('<I',raw,(row*1120+col)*4,0xff000000|(row<<12)|col)
  u.mem_write(buffer,bytes(raw));array=heap+0x12001;w(u,array-1,(0x75<<12)|0x200);q(u,array+7,buffer);w(u,array+0x13,len(raw)*2)
  u.reg_write(regs[29],0x2fe000);fp_offset=cfg[9]-(1<<32)if cfg[9]>>31 else cfg[9];q(u,0x2fe000+fp_offset,clone);u.reg_write(regs[0],array)
- u.emu_start(address(symbols['bytes_gateway']),address(0x1b15198)+4,count=4000000)
+ u.emu_start(address(symbols['bytes_gateway']),address(0x1c8a790)+4,count=4000000)
  expected=b''.join(bytes(raw[((802+row)*1120+69)*4:((802+row)*1120+240)*4])for row in range(171))
  assert bytes(u.mem_read(buffer,len(expected)))==expected and wi(u,array+0x13)==len(expected)*2
  # SF's result builder exports directly through mode 2 without bytes_gateway.
  u.mem_write(buffer,bytes(raw));w(u,array+0x13,len(raw)*2)
  u.reg_write(regs[29],0x2ff000);q(u,0x2feff0,clone);u.reg_write(regs[1],array)
- u.emu_start(address(symbols['result_gateway']),address(0x19c0058),count=4000000)
+ u.emu_start(address(symbols['result_gateway']),address(0x1b493c4),count=4000000)
  assert bytes(u.mem_read(buffer,len(expected)))==expected and wi(u,array+0x13)==len(expected)*2
  assert qi(u,0x2fefe8)==array and qi(u,0x2fefd0)==171 and qi(u,0x2fefd8)==171
  # Relocated inline foreground hooks replay the actual compiler's store slots.
- for label,site in [('android_text_inline',0x10e5e00),('android_spanned_text',0xc42d84),('android_hint_text',0x10e3798)]:
+ for label,site in [('android_text_inline',0x105ca20),('android_spanned_text',0xd0ebb0),('android_hint_text',0x11b854c)]:
   store=struct.unpack('<I',target.read(address(site)-base,4))[0];reg=store&31
   u=setup();u.reg_write(regs[reg],0x7f22cc99)
   u.emu_start(address(symbols[label]),address(site)+4,count=100)
@@ -360,28 +360,28 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
  # renderer's separate combined-alpha path.
  for alpha in (0,0x7f,0xff):
   u=setup();u.reg_write(regs[0],(alpha<<24)|0x22cc99)
-  if anchors[0xc43cb8]:
-   site=address(0xc43cb8);store=struct.unpack('<I',target.read(site-base,4))[0]
+  if anchors[0xd0fae4]:
+   site=address(0xd0fae4);store=struct.unpack('<I',target.read(site-base,4))[0]
    u.emu_start(site,site+4,count=100)
    assert qi(u,0x2fa000+immediate(store))==(alpha<<24)|0xffffff
   else:
-   site=address(0xc43c28);u.emu_start(site,site+4,count=100)
+   site=address(0xd0fa54);u.emu_start(site,site+4,count=100)
    assert u.reg_read(regs[1])==(alpha<<24)|0xffffff
-   u.reg_write(regs[2],alpha<<24);site=address(0xc43cb4);u.emu_start(site,site+4,count=100)
+   u.reg_write(regs[2],alpha<<24);site=address(0xd0fae0);u.emu_start(site,site+4,count=100)
    assert u.reg_read(regs[0])==(alpha<<24)|0xffffff
- for site in (0xfc5fd0,0xfc69cc,0xfc76c4):
+ for site in (0x10b5a98,0x10b64d4,0x10b7588):
   u=setup();at=address(site)
   original=struct.unpack('<I',target.read(at-base,4))[0]
   assert any(s[0]==branch_target(original,at-base)for s in target.names['RenderViewDecorationMixin.paintViewBackground'])
   u.emu_start(at,at+4,count=10)
   assert u.reg_read(regs[0])==nil
- for label,site,reg in [('maml_text_color',0x1642578,4),('maml_filter_color',0x163e208,3)]:
+ for label,site,reg in [('maml_text_color',0x180b6e8,4),('maml_filter_color',0x18072a8,3)]:
   u=setup();col=heap+0x25001;ds(u,col+7,[0.6,0.2,0.4,0.8]);u.reg_write(regs[0],col)
   u.emu_start(address(symbols[label]),address(site)+4,count=100)
   assert struct.unpack('<4d',u.mem_read(col+7,32))==(0.6,1.0,1.0,1.0) and u.reg_read(regs[reg])==col
  adapted=p.get('adapted_widget_paths',0)
  if adapted&128:
-  filter_call=address(0x111bda0);load_child=address(0x111bdbc);allocate_call=load_child+4
+  filter_call=address(0x11f8fa4);load_child=address(0x11f8fc0);allocate_call=load_child+4
   original_call=struct.unpack('<I',target.read(allocate_call-base,4))[0]
   allocator=branch_target(original_call,allocate_call)
   filter_value,child,widget=[heap+off for off in (0x15001,0x16001,0x17001)]
@@ -392,7 +392,7 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
   u=setup();u.reg_write(regs[2],child);u.reg_write(regs[30],return_pc);calls=[]
   frame=u.reg_read(regs[29]);stack=u.reg_read(regs[15]);native_stack=u.reg_read(R.UC_ARM64_REG_SP)
   def wrap_calls(u,pc,size,data):
-   if pc==address(0x17458e4):
+   if pc==address(0x18a95d8):
     assert u.reg_read(regs[30])==filter_call+4
     assert qi(u,u.reg_read(regs[29])-8)==child
     calls.append('filter');u.reg_write(regs[0],filter_value)
@@ -418,8 +418,8 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
   assert u.reg_read(regs[0])==child
   print('PASS original Dart wrapper keeps both call return PCs, original child, canonical filter, and frame:',Path(planpath).name,flush=True)
  if adapted&16:
-  site=address(0x10c7180);resume=site+4
-  matrix=address(0x17458e4);getter=0x3f0800
+  site=address(0x1199b64);resume=site+4
+  matrix=address(0x18a95d8);getter=0x3f0800
   for background_only,callee in [(True,getter),(False,matrix)]:
    u=setup();state=heap+0x12001;receiver=heap+0x14001;result=heap+0x15001
    q(u,u.reg_read(regs[29])-0x10,state);w(u,state+0x3b,nil+(0x20 if background_only else 0x30))
@@ -433,7 +433,7 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
    assert reached==[callee] and u.reg_read(regs[0])==result
   print('PASS background-only drawables keep a single matrix and the original getter return PC:',Path(planpath).name,flush=True)
  if adapted&64:
-  matrix=address(0x17458e4);filter_value=heap+0x15001
+  matrix=address(0x18a95d8);filter_value=heap+0x15001
   for name in ('_VectorDrawableBoxState._buildLiveCached','_VectorDrawableBoxState._renderScene'):
    symbol,size,_=target.names[name][0]
    sites=[at for at,raw,group in p['patches'] if group==64 and base+symbol<=at<base+symbol+size]
@@ -465,12 +465,12 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
    actual=struct.unpack('<d',struct.pack('<Q',u.reg_read(R.UC_ARM64_REG_D0)))[0]
    assert abs(actual-3.0/0.95)<1e-12
   print('PASS Android resource layout and text use the original host density conversion:',Path(planpath).name,flush=True)
- for group,sites in [(16,[0xf18508,0x10c57cc,0x10c6a60,0x10c7180,0x163e2a8,0x185ce78]),(64,[0x12908f0]),(128,[0x10e271c])]:
+ for group,sites in [(16,[0xc5c000,0x119800c,0x1199580,0x1199b64,0x1807348,0x19b08dc]),(64,[0x137a9fc]),(128,[0x11b72c0])]:
   if adapted&group:continue
   if p['ready']&group:
    for site in sites:
     word=struct.unpack('<I',u.mem_read(address(site),4))[0]
-    assert branch_target(word,address(site))==address(0x17458e4)
+    assert branch_target(word,address(site))==address(0x18a95d8)
   else:
    assert all(not(patch_group&group)for _,_,patch_group in p['patches'])
  assert 7<=cfg[6]<2048 and cfg[6]%4==3

@@ -8,15 +8,15 @@ from PIL import Image,ImageDraw
 HERE=Path(__file__).resolve().parent
 e=ELFFile((HERE/'processor.elf').open('rb'));code=e.get_section_by_name('.text').data()
 def execute(data):
- u=Uc(UC_ARCH_ARM64,UC_MODE_ARM);u.mem_map(0x18c7000,0x2000);u.mem_write(0x18c78c4,code)
- u.mem_map(0x8f9000,4096);u.mem_write(0x8f9120,e.get_section_by_name('.text.helper').data())
+ u=Uc(UC_ARCH_ARM64,UC_MODE_ARM);u.mem_map(0x2007000,0x2000);u.mem_write(0x20078c4,code)
+ u.mem_map(0x2000000,4096);u.mem_write(0x2000120,e.get_section_by_name('.text.helper').data())
  u.mem_map(0x200000,0x20000);u.mem_map(0x300000,0x110000);u.mem_map(0x500000,4096)
  obj=0x300001;u.mem_write(obj+0x13,struct.pack('<I',len(data)*2));u.mem_write(obj+0x17,data)
  regs=[getattr(R,f'UC_ARM64_REG_X{i}')for i in range(31)]
  for i,r in enumerate(regs):u.reg_write(r,0x600000+i*16)
  u.reg_write(regs[29],0x21f800);u.reg_write(regs[1],obj);u.reg_write(regs[15],0x21f000);u.reg_write(regs[30],0x500000);u.reg_write(R.UC_ARM64_REG_SP,0x21e000)
  saved=[u.reg_read(r)for r in regs]
- u.emu_start(0x18c78c4,0x500000,count=max(4000000,len(data)*400))
+ u.emu_start(0x20078c4,0x500000,count=max(4000000,len(data)*400))
  assert u.reg_read(R.UC_ARM64_REG_PC)==0x500000
  assert all(u.reg_read(r)==saved[i]for i,r in enumerate(regs)if i!=0)
  assert u.reg_read(R.UC_ARM64_REG_SP)==0x21e000

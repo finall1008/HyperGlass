@@ -7,6 +7,9 @@ from elftools.elf.elffile import ELFFile
 from capstone import Cs,CS_ARCH_ARM64,CS_MODE_ARM
 from model import Model,Image,branch_target,immediate,words,arm_mask,SCENE_FLOOR,SCENE_CEIL
 H=Path(__file__).resolve().parent;ROOT=H.parents[1];EX=ROOT/'adapters';REFS=Path(os.environ.get('HYPERGLASS_REFERENCE_DIR',ROOT/'fixtures/reference'))
+# Minimum allocation size class (16-byte units) of config classes whose
+# reference layout is larger than the fields used by the adapters.
+ADAPTER_MIN_SIZE={1:7,17:8,18:5,37:6}
 @dataclass
 class Target:
  source:int=0
@@ -61,28 +64,27 @@ class Catalog:
   if unit:
    if unit.shadow:return Target(va,-1,1)
    return Target(va-unit.source,unit.anchor,3)
-  if self.widget_wrap and va==0xa95d38:return Target(0,self.widget_wrap[1],2)
-  if va==0x1b1495c:
+  if self.widget_wrap and va==0xb113c0:return Target(0,self.widget_wrap[1],2)
+  if va==0x1c89e44:
    index=self.model.add(va,frames=False,control=True);anchor=self.model.anchors[index]
-   anchor.mode=5;anchor.dependency=self.model.add(0x1b147a4,frames=False,control=True)
+   anchor.mode=5;anchor.dependency=self.model.add(0x1c89c3c,frames=False,control=True)
    anchor.callee='RenderRepaintBoundary.toImage';anchor.delta=4
    return Target(va,index,0)
-  control=va in [0x199c894,0x10b85d0,0x10b9534,0x19c08e4,0x1b15874]
+  control=va in [0x1b18ac0,0x1184418,0x118526c,0x1b49f2c,0x1c8ae94]
   return Target(va,self.model.add(va,frames=False if control else None,control=control),0)
  def add_rows(self,rows,style_count=0):
-  skip={0x19bfc68,0x19bfc74,0x181131c,0xb32828,0xce275c,0x11f308c}
   for i,r in enumerate(rows):
    va=int(r['vaddr'],16);data=bytes.fromhex(r['replacement'])
-   if va in skip or self.unit_at(va):continue
+   if self.unit_at(va):continue
    group=1 if i<style_count else 2
-   if va in [0x148af68,0x148b0a4]:group=32
-   if va in [0x10e5e00,0xc42d84,0xc42e2c,0xc43c28,0xc43cb4,0xc43cb8,0x10e3798,0x1642578,0x10c58c8,0x173d854,0x10d4bc0,0xfc5fd0,0xfc69cc,0xfc76c4,0x148083c,0x1480844,0x1480914,0x1480a00,0x1480b78]:group=4
+   if va in [0x1592d58,0x1592e94]:group=32
+   if va in [0x105ca20,0xd0ebb0,0xd0ec58,0xd0fa54,0xd0fae0,0xd0fae4,0x11b854c,0x180b6e8,0x1196cfc,0x18885a0,0x11971e4,0x10b5a98,0x10b64d4,0x10b7588,0x1588534,0x158853c,0x1588638,0x1588730,0x15888a8]:group=4
    # Optional artwork paths share the setting and the widget adapters, with
    # separate ABI checks for vector and compound drawables.
-   if va in [0x163e208,0x163e2a8,0xf18508,0x10c57cc,0x10c6a60,0x10c7180,0x185ce78,0x185d4a0]:group=16
-   if va==0x12908f0:group=64
-   if va==0x10e271c:group=128
-   control=va in [0x18c3a6c,0x1b147a4,0x148083c,0x1480844,0x1480a00,0x1480b78,0x185d4a0]
+   if va in [0x18072a8,0x1807348,0xc5c000,0x119800c,0x1199580,0x1199b64,0x19b08dc,0x19b0f04]:group=16
+   if va==0x137a9fc:group=64
+   if va==0x11b72c0:group=128
+   control=va in [0x1a2518c,0x1c89c3c,0x1588534,0x158853c,0x1588730,0x15888a8,0x19b0f04]
    anchor=self.model.add(va,frames=False if control else None,control=control)
    unit=Unit(r.get('reason',hex(va)),va,data,group,False,anchor,code_ranges=[(va,va+len(data))]);self.units.append(unit)
  def relocate(self):
@@ -135,7 +137,7 @@ class Catalog:
   # Replay current compiler frame slots and canonical empty-widget pool loads.
   if self.model.image.path.name!='libapp.so':return
   linked=ELFFile(open(EX/'transitions/capture.elf','rb'));syms={s.name:s['st_value']for s in linked.get_section_by_name('.symtab').iter_symbols()}
-  for symbol,reference in [('android_text_inline',0x10e5e00),('android_spanned_text',0xc42d84),('android_hint_text',0x10e3798),('bytes_gateway',0x1b15198),('android_empty_widget',0x113976c),('android_empty_widget',0x1139770),('source_tag_hero',0x1b13fa4),('source_tag_prefix',0x9ebd4c),('source_tag_prefix',0x9ebd50),('mark_floor_store',0x191a74c),('mark_ceil_store',0x191a8b8)]:
+  for symbol,reference in [('android_text_inline',0x105ca20),('android_spanned_text',0xd0ebb0),('android_hint_text',0x11b854c),('bytes_gateway',0x1c8a790),('android_empty_widget',0x1219d58),('android_empty_widget',0x1219d5c),('source_tag_hero',0x1c89438),('source_tag_prefix',0xa1f258),('source_tag_prefix',0xa1f25c),('mark_floor_store',0x1a7f0d4),('mark_ceil_store',0x1a7f244)]:
    pc=syms[symbol];unit=self.unit_at(pc);assert unit
    old=struct.unpack('<I',self.model.image.read(reference,4))[0]
    positions=[]
@@ -146,30 +148,33 @@ class Catalog:
    if symbol in ('android_text_inline','android_spanned_text','android_hint_text'):
     color_mask=struct.unpack_from('<I',unit.data,q-unit.source-4)[0]
     unit.relocations.append(Reloc(q-unit.source-4,9,Target(reference,self.model.add(reference),0),color_mask))
-  default_text=self.unit_at(0xc42e2c)
-  default_text.relocations.append(Reloc(0,10,Target(0xc42d7c,self.model.add(0xc42d7c),0),0))
-  span_store=0xc43cb8;span=self.unit_at(syms['span_direct'])
+  default_text=self.unit_at(0xd0ec58)
+  default_text.relocations.append(Reloc(0,10,Target(0xd0eba8,self.model.add(0xd0eba8),0),0))
+  span_store=0xd0fae4;span=self.unit_at(syms['span_direct'])
   span.relocations.append(Reloc(4,8,Target(span_store,self.model.add(span_store),0),0))
-  for symbol,reference in [('badge_text_replay',0x148af68),('badge_white_pool',0x148af5c)]:
+  for symbol,reference in [('badge_text_replay',0x1592d58),('badge_white_pool',0x1592d4c)]:
    pc=syms[symbol];unit=self.unit_at(pc);assert unit
    for offset in range(0,8 if symbol=='badge_white_pool'else 4,4):
     old=struct.unpack('<I',self.model.image.read(reference+offset,4))[0]
     unit.relocations.append(Reloc(pc+offset-unit.source,8,Target(reference+offset,self.model.add(reference+offset),0),old))
  def add_config(self):
-  self.config_source=0xb33600
-  specs=[(0,0xfb6228),(1,0xfc55cc),(2,0xa07d04),(3,0x1038114),(4,0x1037d80),(5,0x14ebf74),(7,0xc1e528),(8,0xc19da0),(15,0xfaa65c),(17,0x18d99a4),(18,0x18d994c),(30,0xc2e648)]
+  self.config_source=0x2003600
+  specs=[(0,0x10a2e04),(1,0x10b4db8),(2,0xab6638),(3,0x112c4f0),(4,0x112c0a8),(5,0x15f1508),(7,0xcd39a4),(8,0xccf124),(15,0x1096e9c),(17,0x1a3c118),(18,0x1a3c0c0),(30,0xcdf434)]
   # Clip and child-only filter classes come from their PaintingContext
   # allocators. The same layer links are checked by the snapshot ABI rules.
-  specs.extend([(35,0xfb2ed0),(36,0xfb89ac),(37,0xfb3b5c),(38,0xfb6614)])
+  specs.extend([(35,0x109f828),(36,0x10a83ec),(37,0x10a052c),(38,0x10a31f0)])
   for slot,pc in specs:
    w=struct.unpack('<I',self.model.image.read(pc,4))[0];callee=branch_target(w,pc);first,second,_=struct.unpack('<3I',self.model.image.read(callee,12));tag=immediate(first)|(((second>>5)&65535)<<(((second>>21)&3)*16))
    # The ClipRRect constructor can initialize additional fields after BL.
    # Its reuse guard and the allocation stub establish the class.
-   window=(8,1) if pc==0xfb3b5c else None
-   anchor=self.model.add(pc,frames=False,control=pc==0xfc55cc,window=window)
+   window=(8,1) if pc==0x10a052c else None
+   anchor=self.model.add(pc,frames=False,control=pc==0x10b4db8,window=window)
+   # The tag check requires at least the instance size the adapters access.
+   # Some reference classes appended fields that the adapters never read.
+   if slot in ADAPTER_MIN_SIZE:tag=(tag&~0xf00)|(ADAPTER_MIN_SIZE[slot]<<8)
    self.config.append(Config(slot,1,7 if slot==8 else -1,anchor,tag))
-  for slot,pc in [(6,0x19bf008),(9,0x1b151a8),(10,0xa07b58),(11,0xade798),(12,0x15c7ddc),(13,0xade994),(14,0xade920),(16,0xbf6c08),(19,0xe02fcc),(20,0xe036e0),(21,0xc2e138),(22,0xc5cf50),(23,0xc0f434),(24,0xc0f4ac),(25,0xbf6bdc),(26,0xc2e148),(27,0xc2e14c),(28,0xc2e198)]:self.config.append(Config(slot,2,-1,self.model.add(pc,frames=False)))
-  self.config.append(Config(29,2,-1,self.model.add(0x15e183c,frames=False)))
+  for slot,pc in [(6,0x1b482c4),(9,0x1c8a7a0),(10,0xab648c),(11,0xb5eca0),(12,0x16df240),(13,0xb5ee9c),(14,0xb5ee28),(16,0xca6590),(19,0xebf414),(20,0x18575dc),(21,0x1838808),(22,0xd2c464),(23,0xcc4658),(24,0xcc46d0),(25,0xca6564),(26,0x1838818),(27,0x183881c),(28,0x1838868)]:self.config.append(Config(slot,2,-1,self.model.add(pc,frames=False)))
+  self.config.append(Config(29,2,-1,self.model.add(0x16f6b04,frames=False)))
  def report(self,target):
   cache={}
   for i in range(len(self.model.anchors)):self.model.resolve(target,i,cache)
@@ -205,7 +210,7 @@ def widget_anchors(model):
  # sequence. Register assignments may move together, including into a helper.
  argb_masks=(0xfffffc00,0xffffffe0,0xfffffc00,0xffe00fe0,0xfffffc00,0xfffffc00,0xffe00fe0,0xfffffc00,0xffe00fe0)
  argb_relations=((0,5,1,0),(0,5,2,5),(0,0,2,0),(0,0,3,0),(0,0,4,5),(0,0,5,5),(0,0,7,5),(5,0,6,0),(7,0,8,0))
- for store,prologue,helper in [(0x10e5e00,False,True),(0xc42d84,True,False),(0x10e3798,False,False)]:
+ for store,prologue,helper in [(0x105ca20,False,True),(0xd0ebb0,True,False),(0x11b854c,False,False)]:
   masks=argb_masks;relations=argb_relations;start=store-12
   if prologue:
    start-=12
@@ -214,72 +219,72 @@ def widget_anchors(model):
   for pc in (store,store+4):model.operand_sequence(pc,start,masks,relations,follow_helpers=helper)
   if prologue:
    for pc in (store-16,store-8):model.operand_sequence(pc,start,masks,relations)
- index=model.branch_destination(0xc42e2c,0xc42d84,-20,(0,2));a=model.anchors[index]
+ index=model.branch_destination(0xd0ec58,0xd0ebb0,-20,(0,2));a=model.anchors[index]
  a.masks=(0xffc003e0,0xffc00000);a.relations=((0,0,1,0),(0,0,1,5))
- for pc in (0x173d854,0x173d858):model.add(pc,window=((pc-0x173d854)//4,(0x173d868-pc)//4))
- for pc in [0xfc5fd0,0xfc69cc,0xfc76c4]:
+ for pc in (0x18885a0,0x18885a4):model.add(pc,window=((pc-0x18885a0)//4,(0x18885b4-pc)//4))
+ for pc in [0x10b5a98,0x10b64d4,0x10b7588]:
   model.named_call(pc,'RenderViewDecorationMixin.paintViewBackground')
- model.add(0xc19da0,frames=False,window=(5,4))
- model.add(0xc2e648,frames=False,window=(5,5))
+ model.add(0xccf124,frames=False,window=(5,4))
+ model.add(0xcdf434,frames=False,window=(5,5))
  # addChild can gain an insertion path before the original append. Match
  # the owner-to-list load and both array accesses by their shared register.
- start=0xc2e138
+ start=0x1838808
  list_masks=(0xffe0001f,0xfffffc00,0xfffffc00,0xffe00fe0,0xffe00c1f,0xffe00c1f,0xfffffc00)
  list_relations=((1,0,2,0),(1,0,2,5),(1,0,3,0),(1,0,4,5),(1,0,5,5),(5,0,6,0),(5,0,6,5))
- for pc in (start,0xc2e148,0xc2e14c):model.operand_sequence(pc,start,list_masks,list_relations)
- for pc in (0x10c57cc,0x10c6a60):model.add(pc,frames=False,window=(4,4))
- model.named_call(0xf18508,'Drawable.updateBlendModeFilter',follow_helpers=True)
- call=model.named_call(0xc43c24,'ForegroundColorSpanImpl.color')
- model.after_call(0xc43cb8,call,4,(0,6))
- model.after_call(0xc43cbc,call,8,(1,5))
+ for pc in (start,0x1838818,0x183881c):model.operand_sequence(pc,start,list_masks,list_relations)
+ for pc in (0x119800c,0x1199580):model.add(pc,frames=False,window=(4,4))
+ model.named_call(0xc5c000,'Drawable.updateBlendModeFilter',follow_helpers=True)
+ call=model.named_call(0xd0fa50,'ForegroundColorSpanImpl.color')
+ model.after_call(0xd0fae4,call,4,(0,6))
+ model.after_call(0xd0fae8,call,8,(1,5))
 
 def snapshot_anchors(model):
  # The early class guard and the legacy bitmap flag both reject to the
  # geometry checks. Only register roles and the local branch shape matter.
- model.operand_sequence(0xd0fddc,0xd0fdcc,
+ model.operand_sequence(0xeb9300,0xeb92f0,
   (0xfffffc00,0xfffffc00,0xff800000,0xffc0001f,0xffffffff,
    0xffe00c00,0xfffffc00,0xffffffe0,*([0xffffffff]*4),0xfffffc00),
   ((0,0,1,5),(1,0,2,5),(2,0,3,5),(0,5,5,5),(5,0,6,5),(6,0,7,0),(0,5,12,5)))
  # Find the one-cell decision and the positive exit from the final
  # dispatcher separately. Other geometry checks can appear between them.
- model.operand_sequence(0xd0fe80,0xd0fe60,
+ model.operand_sequence(0xeb93a4,0xeb9384,
   (0xffffffe0,0xfffffc1f,0xffffffff,0xfffffc00,0xfffffc1f,
    0xffffffff,0xfffffc00,0xfffffc1f,*([0xffffffff]*5)),
   ((0,0,1,5),(3,0,4,5),(3,5,6,5),(6,0,7,5)))
- model.operand_sequence(0xd0febc,0xd0fe94,
+ model.operand_sequence(0xeb940c,0xeb93e4,
   (0xfffffc00,0xfffffc00,0xff80001f,*([0xffffffff]*11)),
   ((0,0,1,5),(1,0,2,5)))
- for pc in (0x199c894,0x19bf198,0x19c08e4,0x1b15874):
+ for pc in (0x1b18ac0,0x1b48494,0x1b49f2c,0x1c8ae94):
   model.named_call(pc,'RenderRepaintBoundary.toImage',delta=4)
- model.named_call(0x191a61c,'OffsetLayer._createSceneForImage',delta=4)
- for pc,mode in ((0x191a74c,SCENE_FLOOR),(0x191a8b8,SCENE_CEIL)):
+ model.named_call(0x1a7efa0,'OffsetLayer._createSceneForImage',delta=4)
+ for pc,mode in ((0x1a7f0d4,SCENE_FLOOR),(0x1a7f244,SCENE_CEIL)):
   model.scene_mark(pc,mode,0)
   model.scene_mark(pc+4,mode,4)
 
 def catalogs():
- a=Catalog(REFS/'launcher-801027722/libapp.so')
+ a=Catalog(REFS/'launcher-801030308/libapp.so')
  widget_anchors(a.model)
  snapshot_anchors(a.model)
  a.add_elf(EX/'icons/processor.elf',['.text.helper','.text'],1)
- a.add_elf(EX/'transitions/boundary.elf',['.message','.selector','.initialize'],2,physical=(0x1722030,))
+ a.add_elf(EX/'transitions/boundary.elf',['.message','.selector','.initialize'],2,physical=(0x1868e9c,))
  a.add_elf(EX/'transitions/capture.elf',['.capture_root','.hooks','.capture_small','.limit_test','.maml_repaint'],2)
  a.add_elf(EX/'transitions/capture.elf',['.material_scene','.material_scroll','.detached_capture'],2)
  a.add_elf(EX/'transitions/capture.elf',['.text_color','.widget_helpers'],4)
  a.add_elf(EX/'transitions/capture.elf',['.widget_spans'],4)
  a.add_elf(EX/'transitions/capture.elf',['.badge'],32)
  # The allocation-free black text adapter writes only a fresh Color's RGB.
- for pc in [0x1749cdc,0x1749cfc,0x1749d18,0x1749d34]:
+ for pc in [0x188cde8,0x188ce08,0x188ce24,0x188ce40]:
   value=immediate(struct.unpack('<I',a.model.image.read(pc,4))[0])
   a.constraints.append((32,a.model.add(pc),-1,value))
  a.add_elf(EX/'transitions/capture.elf',['.capture_config','.capture_meta','.bridge'],6)
  rows=json.loads((EX/'transitions/profile.json').read_text())['patches'];a.add_rows(rows,len(json.loads((EX/'icons/profile.json').read_text())['patches']))
- span_guard=a.model.add(0xc43cb8)
- for pc,when in [(0xc43c28,False),(0xc43cb4,False),(0xc43cb8,True),(0x2000040,True)]:
+ span_guard=a.model.add(0xd0fae4)
+ for pc,when in [(0xd0fa54,False),(0xd0fae0,False),(0xd0fae4,True),(0x2009040,True)]:
   unit=a.unit_at(pc);unit.guard=span_guard;unit.when_guard_matches=when
  a.add_config()
  # The opacity adapter compares actual return PCs, even when its callers
  # rearrange the instructions that consume the result.
- for pc in [0x10c69f0,0x10c5778,0x10cfff0,0x10d367c]:
+ for pc in [0x1199524,0x1197fc4,0x11a2c40,0x11a5f0c]:
   a.model.named_call(pc,'_ImageViewState._applyImageAlphaIfNeeded',delta=4)
  for name,group in [('ImageFilterGroup.processAll',1),('IconRenderer.renderThemed',1),('OffsetLayer._createSceneForImage',2),('IconCaptureUtil._imageToResult',2),('ShortcutIconWidget._addMessage',2),('AppInfoModel.getcomponentNameString',2)]:
   function=a.model.image.names[name][0];pc=function[0]+8
@@ -291,21 +296,21 @@ def catalogs():
    recipe.masks=tuple(mask if i==recipe.before else arm_mask(word,True)for i,(word,mask)in enumerate(zip(recipe.values,recipe.masks)))
    a.constraints.append((group,anchor,-1,0x170,'hg::ConstraintKind::Minimum'))
   a.units.append(Unit('Dart frame ABI: '+name,pc,b'',group,False,anchor))
- a.constraints.append((2,a.model.add(0x1722088),a.model.add(0x1722030),0x58))
+ a.constraints.append((2,a.model.add(0x1868ef4),a.model.add(0x1868e9c),0x58))
  # Core Dart object offsets used by allocation-free adapters must retain their
  # ABI. Resolve their accessor instructions semantically, then check offsets.
- for pc in [0x15edb70,0x15edba0,0x11f8168,0x11f81ac,0xa030a4,0xa03338,0xa03350,0xfa9b7c,0xfa9cb0,0xfb4d50,0x1562774,0x1562174]:
+ for pc in [0x1707008,0x1707038,0x942184,0x9421c8,0xab1878,0xab1b94,0xab1bac,0x10963bc,0x10964f0,0x10a192c,0x16a3c70,0x16a3670]:
   value=immediate(struct.unpack('<I',a.model.image.read(pc,4))[0])
   a.constraints.append((2,a.model.add(pc,frames=False),-1,value))
  # The wrap adapter uses the proven two-call ColorFiltered allocation route.
  # Preserve its Dart frame and validate the full success path and its stores.
- factory=0x111bd64;call=0x111bda0
+ factory=0x11f8f68;call=0x11f8fa4
  masks=tuple(arm_mask(w)for w in words(a.model.image.read(factory,0x7c)))
- for pc in (call,call+8,0x111bdbc):a.model.operand_sequence(pc,factory,masks,())
+ for pc in (call,call+8,0x11f8fc0):a.model.operand_sequence(pc,factory,masks,())
  capture=EX/'transitions/capture.elf'
  with capture.open('rb') as stream:
   symbols={s.name:s['st_value']for s in ELFFile(stream).get_section_by_name('.symtab').iter_symbols()}
- a.widget_wrap=(len(a.units),a.model.by_va[call],a.model.add(0x17458e4),a.model.by_va[0x10c7180],*(symbols['wrap_'+name]for name in ('compound_widget','filter_dispatch','filter_resume')),symbols['widget_image_filter'])
+ a.widget_wrap=(len(a.units),a.model.by_va[call],a.model.add(0x18a95d8),a.model.by_va[0x1199b64],*(symbols['wrap_'+name]for name in ('compound_widget','filter_dispatch','filter_resume')),symbols['widget_image_filter'])
  a.add_elf(capture,['.widget_wrap'],128)
  a.add_elf(capture,['.widget_image_filter'],16)
  a.relocate()
@@ -337,10 +342,10 @@ def catalogs():
   e.constraints.append((2,e.model.add(pc,frames=False),-1,value))
  for pc in [0xeaf1a4,0xe81f34,0xc5e134,0xc5e10c,0xc5dde0,0xe9dbd8,0xe9dbf4,0xb44038]:
   value=immediate(struct.unpack('<I',e.model.image.read(pc,4))[0]);e.constraints.append((2,e.model.add(pc,frames=False),-1,value))
- a.constraints.append((2,a.model.add(0x18c643c,frames=False),-1,7))
- for pc,value in [(0x8f1ca0,7),(0x8f1cb0,7),(0x8f1cb4,0)]:a.constraints.append((2,a.model.add(pc,frames=False),-1,value))
+ a.constraints.append((2,a.model.add(0x1a27cac,frames=False),-1,7))
+ for pc,value in [(0x928130,7),(0x928140,7),(0x928144,0)]:a.constraints.append((2,a.model.add(pc,frames=False),-1,value))
  # TransformLayer.addToScene composes this offset with its raw matrix.
- for pc,value in [(0x156276c,0x53),(0x1562774,0x57),(0x1562790,0x4f)]:
+ for pc,value in [(0x16a3c68,0x53),(0x16a3c70,0x57),(0x16a3c8c,0x4f)]:
   a.constraints.append((2,a.model.add(pc,frames=False),-1,value))
  # Engine has no Dart replay sites.
  # The same relocation pass is shared, with replay injection limited to AOT.
@@ -361,7 +366,6 @@ if __name__=='__main__':
  for c in result:
   print(c.model.image.path.name,'anchors',len(c.model.anchors),'units',len(c.units),'relocations',sum(len(u.relocations)for u in c.units),flush=True)
   if c.model.image.path.name=='libapp.so':
-   for family in ['801027722','801029226']:
-    path=REFS/f'launcher-{family}/libapp.so'
-    if path.exists():
-     target=Image(path);cache,missing=c.report(target);print(family,'missing',missing,flush=True);assert not missing,(family,missing)
+   # The reference launcher must resolve completely. module/test_host.py
+   # reports older launchers with the native resolver.
+   cache,missing=c.report(c.model.image);print('reference missing',missing,flush=True);assert not missing,missing

@@ -7,10 +7,10 @@ from unicorn import Uc,UC_ARCH_ARM64,UC_MODE_ARM,UC_HOOK_CODE
 import unicorn.arm64_const as R
 H=Path(__file__).resolve().parent
 patches=json.loads((H/'profile.json').read_text())['patches']
-linked=ELFFile(open(H/'capture.elf','rb'));symbols={s.name:s['st_value']for s in linked.get_section_by_name('.symtab').iter_symbols()}
+linked=ELFFile(open(H/'capture.elf','rb'));boundary_elf=ELFFile(open(H/'boundary.elf','rb'));symbols={s.name:s['st_value']for s in linked.get_section_by_name('.symtab').iter_symbols()}
 regs=[getattr(R,f'UC_ARM64_REG_X{i}')for i in range(31)]
 heap=0x100000000;nil=heap+0x8081
-source=ELFFile(open(Path(os.environ.get('HYPERGLASS_REFERENCE_DIR',H.parents[1]/'fixtures/reference'))/'launcher-801027722/libapp.so','rb'))
+source=ELFFile(open(Path(os.environ.get('HYPERGLASS_REFERENCE_DIR',H.parents[1]/'fixtures/reference'))/'launcher-801030308/libapp.so','rb'))
 def original(va,n):
  for s in source.iter_segments():
   if s['p_type']=='PT_LOAD'and s['p_vaddr']<=va<va+n<=s['p_vaddr']+s['p_filesz']:
@@ -23,10 +23,11 @@ def setup():
    if page not in mapped:u.mem_map(page,4096);mapped.add(page)
   u.mem_write(va,data)
  for p in patches:put(int(p['vaddr'],16),bytes.fromhex(p['replacement']))
- badge=linked.get_section_by_name('.badge');put(badge['sh_addr'],badge.data())
- detached=linked.get_section_by_name('.detached_capture')
- if detached is not None:
-  put(detached['sh_addr'],detached.data())
+ # Private adapter sections are linked above the image, not patched into it.
+ for elf in (linked,boundary_elf):
+  for section in elf.iter_sections():
+   if section['sh_flags']&2 and section['sh_size'] and section['sh_addr']>=0x2000000:put(section['sh_addr'],section.data())
+ if linked.get_section_by_name('.detached_capture') is not None:
   put(symbols['dart_layer_hash'],original(symbols['dart_layer_hash'],116))
  for i,r in enumerate(regs):u.reg_write(r,0x90000+i*16)
  u.reg_write(regs[28],1);u.reg_write(regs[22],nil);u.reg_write(regs[15],0x2f0000);u.reg_write(regs[29],0x2fa000);u.reg_write(regs[27],0x300000);u.reg_write(R.UC_ARM64_REG_SP,0x2ee000)
@@ -46,8 +47,8 @@ def scene(u,fw=1120,fh=2436,floor=True,known=True,scale=1.0,shift=(0,0)):
  w(u,root-1,(0x141e<<12)|0x700);w(u,root+0x1f,nil);w(u,root+0x53,mat);w(u,root+0x57,mat);w(u,mat+7,arr);w(u,root+0x2b,view)
  ds(u,arr+0x17,[2.85*scale,0,0,0,0,2.85*scale,0,0,0,0,1,0,shift[0],shift[1],0,1]);ds(u,data+0x17,[2.85,0,0,0,0,2.85,0,0,0,0,1,0,0,0,0,1]);ds(u,bounds+7,[0,0,60,60])
  w(u,view+0x5b,conf);w(u,conf+0xb,physical);ds(u,physical+7,[fw,fw,fh,fh])
- q(u,0x2f9ff8,child);q(u,0x2f9ff0,bounds);q(u,0x2fa008,0x191a61c);q(u,0x2fa000,0x2fb000)
- q(u,0x2fb008,0xa82b94);q(u,0x2fb000,0x2fc000);q(u,0x2fc008,0x19b0dc8 if known else 0x111111);q(u,0x2fc000,0x2fd000);q(u,0x2fd000,0)
+ q(u,0x2f9ff8,child);q(u,0x2f9ff0,bounds);q(u,0x2fa008,0x1a7efa0);q(u,0x2fa000,0x2fb000)
+ q(u,0x2fb008,0xb9df5c);q(u,0x2fb000,0x2fc000);q(u,0x2fc008,0x1b25bec if known else 0x111111);q(u,0x2fc000,0x2fd000);q(u,0x2fd000,0)
  q(u,0x2faf70,nil+(0x20 if floor else 0x30));q(u,0x2faf78,bounds);q(u,0x2faf80,child)
  u.reg_write(regs[2],data)
  return child,root,data,bounds
@@ -56,7 +57,7 @@ for fw,fh,floor in [(1120,2436,True),(1600,2560,False)]:
  u,put=setup();child,root,data,bounds=scene(u,fw,fh,floor)
  for i in range(32):u.reg_write(getattr(R,f'UC_ARM64_REG_Q{i}'),0x112233445566778899aabbccddeeff00+i)
  saved=[u.reg_read(r)for r in regs];vectors=[u.reg_read(getattr(R,f'UC_ARM64_REG_Q{i}'))for i in range(32)]
- execute(u,'root_gateway',0xa02918)
+ execute(u,'root_gateway',0x9e2744)
  assert qi(u,0x2f9ff8)==root
  v=struct.unpack('<16d',u.mem_read(data+0x17,128));assert v==tuple(1.0 if i%5==0 else 0.0 for i in range(16))
  b=struct.unpack('<4d',u.mem_read(bounds+7,32));assert int(b[0])-1048576==69 and int(b[1])-1048576==802
@@ -67,33 +68,33 @@ for fw,fh,floor in [(1120,2436,True),(1600,2560,False)]:
  assert u.reg_read(R.UC_ARM64_REG_SP)==0x2ee000
  image,native,clone=heap+0x11001,heap+0x11101,heap+0x11201
  w(u,image+7,native);q(u,image+15,fw);q(u,image+23,fh);u.reg_write(regs[29],0x2fb000);u.reg_write(regs[0],image)
- execute(u,'mark_floor'if floor else'mark_ceil',0x191a750 if floor else 0x191a8bc)
+ execute(u,'mark_floor'if floor else'mark_ceil',0x1a7f0d8 if floor else 0x1a7f248)
  assert qi(u,image+15)==171 and qi(u,image+23)==171
  assert wi(u,image+11)&1==0 and wi(u,image+11)>>25==0x15
  assert wi(u,native+3)==(1<<28)|fw|(fh<<14)
  u.reg_write(regs[29],0x2fd000);u.reg_write(regs[1],image);u.reg_write(regs[2],171)
- execute(u,'clone_pack',0xa1e60c);packed=qi(u,0x2fcff0);assert packed>>32==wi(u,image+11)
+ execute(u,'clone_pack',0xa10560);packed=qi(u,0x2fcff0);assert packed>>32==wi(u,image+11)
  w(u,clone+7,native);q(u,clone+23,171);u.reg_write(regs[1],packed);u.reg_write(regs[3],clone)
- execute(u,'clone_unpack',0xa1e638);assert qi(u,clone+15)==171 and wi(u,clone+11)==wi(u,image+11)
+ execute(u,'clone_unpack',0xa1058c);assert qi(u,clone+15)==171 and wi(u,clone+11)==wi(u,image+11)
  # Cropping uses the real external typed-array layout observed on the device.
  buffer=0x50000000;u.mem_map(buffer,0x1000000);raw=bytearray(fw*fh*4)
  for row in range(802,973):
   for col in range(69,240):struct.pack_into('<I',raw,(row*fw+col)*4,0xff000000|(row<<12)|col)
  u.mem_write(buffer,bytes(raw));array=heap+0x12001;w(u,array-1,(0x75<<12)|0x200);q(u,array+7,buffer);w(u,array+0x13,len(raw)*2)
  u.reg_write(regs[29],0x2fe000);q(u,0x2fdee0,clone);u.reg_write(regs[0],array)
- execute(u,'bytes_gateway',0x1b1519c)
+ execute(u,'bytes_gateway',0x1c8a794)
  expected=b''.join(bytes(raw[((802+row)*fw+69)*4:((802+row)*fw+240)*4])for row in range(171))
  assert bytes(u.mem_read(buffer,len(expected)))==expected and wi(u,array+0x13)==len(expected)*2
  # An optional buffer reused by the result builder must not be cropped twice.
  u.reg_write(regs[29],0x2ff000);q(u,0x2feff0,clone);u.reg_write(regs[1],array)
- execute(u,'result_gateway',0x19c0058)
+ execute(u,'result_gateway',0x1b493c4)
  assert qi(u,0x2fefe8)==array and qi(u,0x2fefd0)==171 and qi(u,0x2fefd8)==171
  assert bytes(u.mem_read(buffer,len(expected)))==expected
 print('PASS: dynamic viewport, floor/ceil sizing, exact RGBA crop, clone metadata, saved CPU registers and original result-allocation PC')
 # Gesture return captures while the workspace is still zoomed out: the scene
 # matrix stays identity and the crop covers the target's scaled on-screen extent.
 for scale in [0.9,1.08]:
- u,put=setup();child,root,data,bounds=scene(u,scale=scale,shift=(56,120));execute(u,'root_gateway',0xa02918)
+ u,put=setup();child,root,data,bounds=scene(u,scale=scale,shift=(56,120));execute(u,'root_gateway',0x9e2744)
  fx=2.85*scale*24.2105263158+56;fy=2.85*scale*281.4210526316+120
  v=struct.unpack('<16d',u.mem_read(data+0x17,128))
  assert all(v[i]==(1 if i%5==0 else 0) for i in range(16))
@@ -101,7 +102,7 @@ for scale in [0.9,1.08]:
  size=round(60*2.85*scale)
  assert round((b[0]-int(b[0])-0.5)*131072)==size and round((b[1]-int(b[1])-0.5)*131072)==size
 print('PASS: scaled ancestors keep the identity scene; crop follows the on-screen target extent')
-u,put=setup();child,root,data,bounds=scene(u,known=False);before=bytes(u.mem_read(bounds+7,32));execute(u,'root_gateway',0xa02918)
+u,put=setup();child,root,data,bounds=scene(u,known=False);before=bytes(u.mem_read(bounds+7,32));execute(u,'root_gateway',0x9e2744)
 assert qi(u,0x2f9ff8)==child and bytes(u.mem_read(bounds+7,32))==before
 print('PASS: unrelated image exports keep their existing scene and dimensions')
 
@@ -113,7 +114,7 @@ if 'capture_layer_identity' in symbols:
   w(u,child+0x1f,nil);q(u,0x2faf68,nil)
   if matched:
    u.mem_write(0x2f0000-112+32,struct.pack('<6dQ2I',69.1,802.2,2.85,2.85,60,60,0,1120,2436))
-  execute(u,'root_gateway',0xa02918)
+  execute(u,'root_gateway',0x9e2744)
   assert qi(u,0x2f9ff8)==child
   if matched:
    assert qi(u,0x2faf68)==2<<29
@@ -125,9 +126,9 @@ if 'capture_layer_identity' in symbols:
  print('PASS: detached live boundary uses matching mounted placement and resting export')
 # Execute the real wrapper through both existing allocation return PCs.
 for show in [False,True]:
- u,put=setup();put(0x14ebf5c,original(0x14ebf5c,48))
- p=next(p for p in patches if p['vaddr']=='14ebf7c');put(0x14ebf7c,bytes.fromhex(p['replacement']))
- for va in [0x1925784,0x1720f90,0x1b56978,0x400000]:put(va,bytes.fromhex('c0035fd6'))
+ u,put=setup();put(0x15f14f0,original(0x15f14f0,48))
+ p=next(p for p in patches if p['vaddr']=='15f1510');put(0x15f1510,bytes.fromhex(p['replacement']))
+ for va in [0x1a89858,0x1867c88,0x1cea348,0x400000]:put(va,bytes.fromhex('c0035fd6'))
  this,child,controller,key,boundary,message=[heap+x for x in [0x10001,0x10101,0x10201,0x10301,0x10401,0x10501]]
  w(u,this+0xb,child);w(u,this+0x2b,controller);w(u,controller+0x14b,key);w(u,child-1,0x1e10<<12)
  w(u,this+0x23,nil+(0x30 if show else 0x20));w(u,this+0x1f,nil+0x30)
@@ -135,14 +136,14 @@ for show in [False,True]:
  u.reg_write(regs[1],this);u.reg_write(regs[30],0x400000)
  calls=[]
  def hook(u,pc,size,opaque):
-  if pc==0x1925784:
-   assert u.reg_read(regs[30])==0x14ebf78;u.reg_write(regs[0],boundary);calls.append('allocate');u.reg_write(R.UC_ARM64_REG_PC,u.reg_read(regs[30]))
-  elif pc==0x1720f90:
-   assert u.reg_read(regs[30])==0x1722088
+  if pc==0x1a89858:
+   assert u.reg_read(regs[30])==0x15f150c;u.reg_write(regs[0],boundary);calls.append('allocate');u.reg_write(R.UC_ARM64_REG_PC,u.reg_read(regs[30]))
+  elif pc==0x1867c88:
+   assert u.reg_read(regs[30])==0x1868ef4
    assert u.reg_read(regs[1])==this and u.reg_read(regs[2])==boundary
    u.reg_write(regs[0],message);calls.append('badge');u.reg_write(R.UC_ARM64_REG_PC,u.reg_read(regs[30]))
  u.hook_add(UC_HOOK_CODE,hook)
- u.emu_start(0x1722030,0x400000,count=1000)
+ u.emu_start(0x1868e9c,0x400000,count=1000)
  assert u.reg_read(R.UC_ARM64_REG_PC)==0x400000
  assert struct.unpack('<I',u.mem_read(boundary+7,4))[0]==key&0xffffffff
  assert struct.unpack('<I',u.mem_read(boundary+0xb,4))[0]==child&0xffffffff
@@ -154,17 +155,19 @@ print('PASS: complete boundary and badge wrapping retain original allocation ret
 # unrelated widget types retain their original eligibility decisions.
 for item_type in [0,14,2,9]:
  for sx,sy in [(1,1),(1,2),(2,1),(2,2)]:
-  u,put=setup();put(0xd0fdc4,original(0xd0fdc4,264))
+  u,put=setup();put(0xeb92dc,original(0xeb92dc,0x140))
   for p in patches:
-   if 0xd0fdc4<=int(p['vaddr'],16)<0xd0fecc:put(int(p['vaddr'],16),bytes.fromhex(p['replacement']))
-  model=heap+0x10001;tag=0x7f5;w(u,model-1,tag<<12)
+   if 0xeb92dc<=int(p['vaddr'],16)<0xeb941c:put(int(p['vaddr'],16),bytes.fromhex(p['replacement']))
+  model=heap+0x10001;tag=0x8a2;w(u,model-1,tag<<12)
   q(u,model+0xf,item_type);q(u,model+0x1f,sx);q(u,model+0x27,sy);w(u,model+0xdf,nil+0x30)
-  table=0x600000;put(table+(tag-0xabf)*8,struct.pack('<Q',0x500000))
-  put(0x400000,bytes.fromhex('c0035fd6'));put(0x500000,bytes.fromhex('c0035fd6'))
+  table=0x600000;put(table+(tag-0xd44)*8,struct.pack('<Q',0x500000))
+  # BigIconUtils.isBigIconIrregular guards shortcut-class widgets.
+  big_icon=0xeb5294
+  put(0x400000,bytes.fromhex('c0035fd6'));put(0x500000,bytes.fromhex('c0035fd6'));put(big_icon,bytes.fromhex('c0035fd6'))
   u.reg_write(regs[21],table);u.reg_write(regs[1],model);u.reg_write(regs[30],0x400000)
   def legacy(u,pc,size,data):
-   if pc==0x500000:u.reg_write(regs[0],nil+0x20);u.reg_write(R.UC_ARM64_REG_PC,u.reg_read(regs[30]))
-  u.hook_add(UC_HOOK_CODE,legacy);u.emu_start(0xd0fdc4,0x400000,count=200)
+   if pc in (0x500000,big_icon):u.reg_write(regs[0],nil+0x20);u.reg_write(R.UC_ARM64_REG_PC,u.reg_read(regs[30]))
+  u.hook_add(UC_HOOK_CODE,legacy);u.emu_start(0xeb92dc,0x400000,count=200)
   eligible=item_type in [0,14] and sx==sy==1
   assert u.reg_read(regs[0])==nil+(0x20 if eligible else 0x30),(item_type,sx,sy)
 print('PASS: attached one-cell boundaries are eligible; large geometry and widget decisions remain scoped')
@@ -173,7 +176,7 @@ path=[heap+0x10001+0x100*i for i in range(6)];other=heap+0x10801
 def capture_frames(u,selected,marked=True):
  u.reg_write(R.UC_ARM64_REG_SP,0x2ee000)
  for layer,parent in zip(path,path[1:]+[nil]):w(u,layer+0x1f,parent)
- for fp,parent,ret in [(0x2fa000,0x2fa100,0x15628a4),(0x2fa100,0x2fa200,0xa029a4),(0x2fa200,0x2fa300,0xa02928),(0x2fa300,0x2fa400,0x191a61c),(0x2fa400,0x2fa500,0xa82b94)]:q(u,fp,parent);q(u,fp+8,ret)
+ for fp,parent,ret in [(0x2fa000,0x2fa100,0x16a3da0),(0x2fa100,0x2fa200,0x9e27d0),(0x2fa200,0x2fa300,0x9e2754),(0x2fa300,0x2fa400,0x1a7efa0),(0x2fa400,0x2fa500,0xb9df5c)]:q(u,fp,parent);q(u,fp+8,ret)
  bounds=heap+0x10a01;q(u,0x2fa378,bounds);ds(u,bounds+7,[1048576.5 if marked else 0,0,60,60])
  q(u,0x2fa380,path[0]);u.reg_write(regs[29],0x2fa000);u.reg_write(regs[30],0x400000)
 for depth,selected,marked in [*((i,p,True)for i,p in enumerate(path)),(None,other,True),*((None,p,False)for p in path)]:
@@ -181,54 +184,54 @@ for depth,selected,marked in [*((i,p,True)for i,p in enumerate(path)),(None,othe
  u.emu_start(symbols['limit_test'],0x400000,count=2000)
  assert u.reg_read(regs[16])==(0 if depth is None else depth+1)
  u.reg_write(regs[2],0x10301)
- u.emu_start(symbols['stop_after_path'],0x1562438,count=2000)
+ u.emu_start(symbols['stop_after_path'],0x16a3934,count=2000)
  assert u.reg_read(regs[2])==(nil if depth is not None else heap+0x10301)
  if depth is not None:
-  u.emu_start(symbols['force_path'],0x1562384,count=2000)
+  u.emu_start(symbols['force_path'],0x16a3880,count=2000)
   assert struct.unpack('<I',u.mem_read(selected+0x23,4))[0]==(nil+0x20)&0xffffffff
 print('PASS: only marked SF exports rebuild target ancestors and exclude later siblings; ordinary exports replay')
 
 # Color filters, shader masks and translucent opacity on the capture path are
 # replaced by their children (opacity keeps its offset push); elsewhere they replay.
 for on_path,selected,marked in [(True,path[3],True),(False,other,True),(False,path[3],False)]:
- for label,resume in [('capture_color_filter',0x156376c),('capture_shader_mask',0x1563974)]:
+ for label,resume in [('capture_color_filter',0x16a4c70),('capture_shader_mask',0x16a4e78)]:
   u,put=setup();capture_frames(u,selected,marked);builder=heap+0x10901
-  u.reg_write(regs[1],selected);u.reg_write(regs[2],builder);u.reg_write(regs[30],0x1562400)
-  end=0x1562368 if on_path else resume;u.emu_start(symbols[label],end,count=2000)
+  u.reg_write(regs[1],selected);u.reg_write(regs[2],builder);u.reg_write(regs[30],0x16a38fc)
+  end=0x16a3864 if on_path else resume;u.emu_start(symbols[label],end,count=2000)
   assert u.reg_read(R.UC_ARM64_REG_PC)==end and u.reg_read(regs[1])==selected and u.reg_read(regs[2])==builder
-  if on_path:assert u.reg_read(regs[30])==0x1562400 and u.reg_read(regs[15])==0x2f0000
-  else:assert u.reg_read(regs[15])==0x2f0000-16 and qi(u,0x2f0000-16)==0x2fa000 and qi(u,0x2f0000-8)==0x1562400
+  if on_path:assert u.reg_read(regs[30])==0x16a38fc and u.reg_read(regs[15])==0x2f0000
+  else:assert u.reg_read(regs[15])==0x2f0000-16 and qi(u,0x2f0000-16)==0x2fa000 and qi(u,0x2f0000-8)==0x16a38fc
  for alpha in [128,255]:
   u,put=setup();capture_frames(u,selected,marked);q(u,0x2f9ff8,selected);u.reg_write(regs[3],selected)
   u.reg_write(R.UC_ARM64_REG_NZCV,0 if alpha>=255 else 1<<31)
-  end=0x1562a44 if alpha>=255 or on_path else 0x15629c8;u.emu_start(symbols['capture_opacity'],end,count=2000)
+  end=0x16a3f40 if alpha>=255 or on_path else 0x16a3ec4;u.emu_start(symbols['capture_opacity'],end,count=2000)
   assert u.reg_read(R.UC_ARM64_REG_PC)==end and u.reg_read(regs[3])==selected
 print('PASS: offscreen color filter, shader mask and opacity layers on the capture path draw their children directly')
 
 # Android text colors retain opacity without allocating or changing live locals.
 for color in [0xff000000, 0xff808080, 0x7f22cc99, 0x00ffffff]:
  u,put=setup();u.reg_write(regs[4],color);saved=[u.reg_read(r)for r in regs]
- execute(u,'android_text_inline',0x10e5e04)
+ execute(u,'android_text_inline',0x105ca24)
  expected=color|0xffffff
- assert u.reg_read(regs[4])==expected and qi(u,0x2f9fd0)==expected
+ assert u.reg_read(regs[4])==expected and qi(u,0x2f9fd8)==expected
  assert all(u.reg_read(r)==saved[i]for i,r in enumerate(regs)if i!=4)
- u,put=setup();u.reg_write(regs[3],color);execute(u,'android_spanned_text',0xc42d88)
+ u,put=setup();u.reg_write(regs[3],color);execute(u,'android_spanned_text',0xd0ebb4)
  assert u.reg_read(regs[3])==expected and qi(u,0x2f9fd8)==expected
- u,put=setup();u.reg_write(regs[0],color);execute(u,'android_hint_text',0x10e379c)
+ u,put=setup();u.reg_write(regs[0],color);execute(u,'android_hint_text',0x11b8550)
  assert u.reg_read(regs[0])==expected and qi(u,0x2f9fa8)==expected
-for label,resume,reg in [('maml_text_color',0x164257c,4),('maml_filter_color',0x163e20c,3)]:
+for label,resume,reg in [('maml_text_color',0x180b6ec,4),('maml_filter_color',0x18072ac,3)]:
  u,put=setup();col=heap+0x25001;ds(u,col+7,[0.6,0.2,0.4,0.8]);u.reg_write(regs[0],col)
  execute(u,label,resume)
  assert struct.unpack('<4d',u.mem_read(col+7,32))==(0.6,1.0,1.0,1.0) and u.reg_read(regs[reg])==col
 for cid in [0x21f9,*range(0x21fa,0x2208),0x2208,0x2209]:
- for caller in [0x10b85cc,0x10b85e8,0x10b86e0,0x10b8be0,0x10ba404,0x400000]:
+ for caller in [0x1184414,0x1184430,0x1184528,0x1184b34,0x11860a8,0x400000]:
   u,put=setup();view=heap+0x20001;controller=heap+0x21001
   q(u,view-1,(cid<<12)|0x500);w(u,view+0xb,controller)
   u.reg_write(regs[1],view);u.reg_write(regs[30],caller)
   for offset in [0xcf,0xd7,0xdb,0xdf,0xe3,0xe7]:w(u,controller+offset,heap+0x22001+offset)
   before=bytes(u.mem_read(controller,0x200));saved=[u.reg_read(r)for r in regs]
-  hidden=0x21fa<=cid<=0x2207 and 0x10b85d0<=caller<0x10b9534
-  execute(u,'android_background',caller if hidden else 0x173d858)
+  hidden=0x21fa<=cid<=0x2207 and 0x1184418<=caller<0x118526c
+  execute(u,'android_background',caller if hidden else 0x18885a4)
   assert bytes(u.mem_read(controller,0x200))==before
   if hidden:assert u.reg_read(regs[0])==nil
   else:assert u.reg_read(regs[2])==controller&0xffffffff
@@ -236,9 +239,9 @@ for cid in [0x21f9,*range(0x21fa,0x2208),0x2208,0x2209]:
   assert u.reg_read(R.UC_ARM64_REG_SP)==0x2ee000
 # Provider pictures take the existing Opacity path at 0.6 of their own alpha;
 # resource drawables and hidden or opaque-by-default resources replay.
-for opacity,caller,outer,end,value in [(None,0x10c69f0,0,0x10c5940,0.6),(None,0x10c5778,0,0x10c5940,0.6),(None,0x10cfff0,0,0x10c5940,0.6),
-                                       (None,0x10d367c,0x10cdac0,0x10c5940,0.6),(0.5,0x10d367c,0x10cdac0,0x10c5940,0.3),(1.0,0x10cfff0,0,0x10c5940,0.6),(0.0,0x10c69f0,0,0x10c58dc,0.0),
-                                       (None,0x10d367c,0x10c7838,0x10c58cc,0.0),(None,0x10cbc68,0,0x10c58cc,0.0),(1.0,0x10d367c,0x10c7838,0x10c58dc,0.0)]:
+for opacity,caller,outer,end,value in [(None,0x1199524,0,0x1196d74,0.6),(None,0x1197fc4,0,0x1196d74,0.6),(None,0x11a2c40,0,0x1196d74,0.6),
+                                       (None,0x11a5f0c,0x11a0854,0x1196d74,0.6),(0.5,0x11a5f0c,0x11a0854,0x1196d74,0.3),(1.0,0x11a2c40,0,0x1196d74,0.6),(0.0,0x1199524,0,0x1196d10,0.0),
+                                       (None,0x11a5f0c,0x119a4b8,0x1196d00,0.0),(None,0x119e930,0,0x1196d00,0.0),(1.0,0x11a5f0c,0x119a4b8,0x1196d10,0.0)]:
  u,put=setup();q(u,0x2fa008,caller);q(u,0x2fa000,0x2fb000);q(u,0x2fb008,outer);q(u,0x2f9ff0,0);boxed=heap+0x26001
  if opacity is not None:ds(u,boxed+7,[opacity])
  u.reg_write(regs[0],nil if opacity is None else boxed)
@@ -248,17 +251,17 @@ for opacity,caller,outer,end,value in [(None,0x10c69f0,0,0x10c5940,0.6),(None,0x
 print('PASS: Android foreground alpha, paint-phase-only container background suppression, intact provider outlines and leaf decorations, translucent provider bitmaps')
 
 # Both host branches enter the existing Radius allocator with the live radius.
-for site,start,end,context_reg in [(0x1480a00,0x1480a20,0x1480a30,2),(0x1480b78,0x1480b98,0x1480ba8,0)]:
+for site,start,end,context_reg in [(0x1588730,0x1588750,0x1588760,0),(0x15888a8,0x15888c8,0x15888d8,3)]:
  for radius in [20.0,24.0,32.0,21.5]:
   u,put=setup();put(start,original(start,end-start))
   context,boxed=heap+0x20001,heap+0x21001
   w(u,context+0xf,boxed);ds(u,boxed+7,[radius]);u.reg_write(regs[context_reg],context)
   u.emu_start(site,end,count=100)
   assert u.reg_read(R.UC_ARM64_REG_PC)==end
-  assert qi(u,0x2f9f88)==struct.unpack('<Q',struct.pack('<d',radius))[0]
+  assert qi(u,0x2f9fa0)==struct.unpack('<Q',struct.pack('<d',radius))[0]
   assert u.reg_read(R.UC_ARM64_REG_D0)==struct.unpack('<Q',struct.pack('<d',radius))[0]
   assert u.reg_read(R.UC_ARM64_REG_SP)==0x2ee000
-for site in [0xfc5fd0,0xfc69cc,0xfc76c4]:
+for site in [0x10b5a98,0x10b64d4,0x10b7588]:
  u,put=setup();u.reg_write(regs[30],0x400000);saved=[u.reg_read(r)for r in regs]
  u.emu_start(site,site+4,count=10)
  assert u.reg_read(regs[0])==nil
@@ -272,7 +275,7 @@ zoom,matrix,values=heap+0x13001,heap+0x13101,heap+0x13201
 w(u,child+0x1f,zoom);w(u,zoom-1,(0x141e<<12)|0x700);w(u,zoom+0x1f,root)
 w(u,zoom+0x53,matrix);w(u,zoom+0x57,matrix);w(u,matrix+7,values)
 ds(u,values+0x17,[.85,0,0,0,0,.85,0,0,0,0,1,0,29.5,64,0,.9999])
-execute(u,'root_gateway',0xa02918)
+execute(u,'root_gateway',0x9e2744)
 b=struct.unpack('<4d',u.mem_read(bounds+7,32))
 assert int(b[0])-1048576==69 and int(b[1])-1048576==802
 assert round((b[0]-int(b[0])-0.5)*131072)==171
@@ -291,12 +294,12 @@ ds(u,values+0x17,[.85,0,0,0,0,.85,0,0,0,0,1,0,29.5,64,0,.9999])
 picture=heap+0x13301;w(u,child+0x47,picture)
 w(u,picture+0x1f,child);w(u,picture+0x37,nil);w(u,picture+0x47,nil)
 # A nested material forces the viewport path even without the close caller.
-w(u,picture-1,(0x140f<<12)|0x600);q(u,0x2fc008,0x1b1495c)
-execute(u,'root_gateway',0xa02918)
+w(u,picture-1,(0x140f<<12)|0x600);q(u,0x2fc008,0x1c89e44)
+execute(u,'root_gateway',0x9e2744)
 assert qi(u,0x2faf68)==2<<29
 u,put=setup();child,root,data,bounds=scene(u)
 offset=heap+0x13301;w(u,root+0x4f,offset);ds(u,offset+7,[14,23])
-execute(u,'root_gateway',0xa02918)
+execute(u,'root_gateway',0x9e2744)
 b=struct.unpack('<4d',u.mem_read(bounds+7,32))
 assert (int(b[0])-1048576,int(b[1])-1048576)==(83,825)
 for marked,on_path,scale,offset in [(True,True,.85,0),(True,True,.85,7),(True,True,1,0),(False,True,.85,0),(True,False,.85,0),(True,True,2.85,0)]:
@@ -304,25 +307,25 @@ for marked,on_path,scale,offset in [(True,True,.85,0),(True,True,.85,7),(True,Tr
  matrix,values=heap+0x13101,heap+0x13201;w(u,selected+0x53,matrix);w(u,matrix+7,values)
  position=heap+0x13301;w(u,selected+0x4f,position);ds(u,position+7,[offset,0])
  ds(u,values+0x17,[scale,0,0,0,0,scale,0,0,0,0,1,0,29.5,64,0,1])
- builder=heap+0x10901;u.reg_write(regs[1],selected);u.reg_write(regs[2],builder);u.reg_write(regs[30],0x1562400)
- end=0x1562368 if marked and on_path and scale==.85 and not offset else 0x1562734
+ builder=heap+0x10901;u.reg_write(regs[1],selected);u.reg_write(regs[2],builder);u.reg_write(regs[30],0x16a38fc)
+ end=0x16a3864 if marked and on_path and scale==.85 and not offset else 0x16a3c30
  u.emu_start(symbols['capture_transform'],end,count=2000)
- assert u.reg_read(regs[1])==selected and u.reg_read(regs[2])==builder and u.reg_read(regs[30])==0x1562400
- assert u.reg_read(regs[15])==0x2f0000-(16 if end==0x1562734 else 0)
+ assert u.reg_read(regs[1])==selected and u.reg_read(regs[2])==builder and u.reg_read(regs[30])==0x16a38fc
+ assert u.reg_read(regs[15])==0x2f0000-(16 if end==0x16a3c30 else 0)
 print('PASS: transform bypass is limited to marked capture ancestors; original builder, return address and stack survive')
 u,put=setup();child,root,data,bounds=scene(u,known=False)
-u.reg_write(regs[1],root);u.reg_write(regs[30],0x1562400)
+u.reg_write(regs[1],root);u.reg_write(regs[30],0x16a38fc)
 modes=[]
 def viewport_probe(u,pc,size,opaque):
  modes.append(u.reg_read(regs[16]))
 u.hook_add(UC_HOOK_CODE,viewport_probe,begin=symbols['capture_bridge'],end=symbols['capture_bridge'])
-u.emu_start(symbols['capture_transform'],0x1562734,count=2000)
-assert modes==[10] and u.reg_read(regs[30])==0x1562400
+u.emu_start(symbols['capture_transform'],0x16a3c30,count=2000)
+assert modes==[10] and u.reg_read(regs[30])==0x16a38fc
 
 # Closing capture keeps its material marker even while its Dart layout still
 # carries the resting matrix from the preceding frame.
-u,put=setup();child,root,data,bounds=scene(u);q(u,0x2fc008,0x1b136bc)
-execute(u,'root_gateway',0xa02918);assert qi(u,0x2faf68)==1<<30
+u,put=setup();child,root,data,bounds=scene(u);q(u,0x2fc008,0x1c887e4)
+execute(u,'root_gateway',0x9e2744);assert qi(u,0x2faf68)==1<<30
 print('PASS: closing exports identify the saved backdrop before the workspace zoom updates')
 
 if 'material_scene_signal' in symbols:
@@ -340,9 +343,9 @@ if 'material_scene_signal' in symbols:
 
 # Background provider snapshots must not start a new app flight. A surrounding
 # app open/close still owns the export when it asks for the provider image.
-for enclosing,kind in [(None,3),(0x19b0dc8,1),(0x1b136bc,2)]:
- u,put=setup();child,root,data,bounds=scene(u);q(u,0x2fc008,0x199c894)
+for enclosing,kind in [(None,3),(0x1b25bec,1),(0x1c887e4,2)]:
+ u,put=setup();child,root,data,bounds=scene(u);q(u,0x2fc008,0x1b18ac0)
  if enclosing is not None:q(u,0x2fd008,enclosing)
- execute(u,'root_gateway',0xa02918)
+ execute(u,'root_gateway',0x9e2744)
  assert qi(u,0x2faf68)==kind<<29 and qi(u,0x2f9ff8)==root
 print('PASS: provider refresh exports keep their own stage; enclosing app flights retain priority')

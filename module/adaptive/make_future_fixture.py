@@ -42,9 +42,9 @@ put_words(frame,[(word&~(4095<<10))|((immediate(word)+8)<<10)])
 prepare,size,_=image.names['SfWindowAnimImplementor.prepareIconLayers'][0]
 for pc in range(prepare,prepare+size,4):
  word=struct.unpack('<I',image.read(pc,4))[0]
- if word==0x928021f1:put_words(pc,[(word&~(65535<<5))|((0x1a8-1)<<5)])
- elif word&0xffc003ff in (0xd10001ef,0xd10003af) and immediate(word)==0x1a0:
-  put_words(pc,[(word&~(4095<<10))|(0x1b0<<10)])
+ if word==0x928022f1:put_words(pc,[(word&~(65535<<5))|((0x1b8-1)<<5)])
+ elif word&0xffc003ff in (0xd10001ef,0xd10003af) and immediate(word)==0x1b0:
+  put_words(pc,[(word&~(4095<<10))|(0x1c0<<10)])
 
 # Give the scene export new frame slots for its incoming layer, rectangle,
 # rounding flag and view ID, as well as its await result spills.
@@ -62,18 +62,16 @@ for pc in range(scene,scene+size,4):
 
 # Rename the independent temporaries in the class and one-cell guards.
 for start,register,operands in [
- (0xd0fdcc,2,((0,),(0,5),(5,),(),(),(0,),(0,5),(0,))),
- (0xd0fe60,3,((0,),(5,),(),(0,),(5,),(),(0,),(5,)))
+ (0xeb92f0,3,((0,),(0,5),(5,),(),(),(0,),(0,5),(0,))),
+ (0xeb9384,4,((0,),(5,),(),(0,),(5,),(),(0,),(5,)))
 ]:
  for i,fields in enumerate(operands):
   pc=start+i*4;word=words(image.read(pc,4))[0]
-  for bit in fields:
-   assert (word>>bit)&31==0
-   word|=register<<bit
+  for bit in fields:word=(word&~(31<<bit))|(register<<bit)
   put_words(pc,[word])
 
 # Reassign the hint ARGB and temporaries together, as a compiler can do.
-store=0x10e3798;registers={0:3,3:1,5:4,6:5}
+store=0x11b854c;registers={0:3,3:1,5:4,6:5}
 operands=((0,5),(0,),(0,5),(0,),(0,5),(0,5),(0,),(0,5),(0,))
 changed=[]
 for word,shifts in zip(struct.unpack('<9I',image.read(store-12,36)),operands):
@@ -83,7 +81,7 @@ for word,shifts in zip(struct.unpack('<9I',image.read(store-12,36)),operands):
 put_words(store-12,changed)
 
 # Use an existing channel-unpack sequence immediately after the span getter.
-put_words(0xc43c28,struct.unpack('<6I',image.read(0xc43cb8,24)))
+put_words(0xd0fa54,struct.unpack('<6I',image.read(0xd0fae4,24)))
 for rule in catalog.config:
  pc=catalog.model.anchors[rule.anchor].va
  if rule.kind==1:

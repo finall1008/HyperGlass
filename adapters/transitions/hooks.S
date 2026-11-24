@@ -112,14 +112,14 @@ mark_floor:
  bl capture_bridge
 .global mark_floor_store
 mark_floor_store:
- stur x0,[x29,#-0x90]
+ stur x0,[x29,#-0xa0]
  b mark_floor_continue
 mark_ceil:
  mov x16,#1
  bl capture_bridge
 .global mark_ceil_store
 mark_ceil_store:
- stur x0,[x29,#-0x88]
+ stur x0,[x29,#-0x90]
  b mark_ceil_continue
 result_gateway:
  mov x16,#2
@@ -128,7 +128,7 @@ result_gateway:
 bytes_gateway:
  mov x16,#3
  bl capture_bridge
- mov x17,#-0x168
+ mov x17,#-0x178
  b bytes_continue
 clone_pack:
  mov x16,#4
@@ -152,8 +152,8 @@ android_image_plate:
  // both current pool-load instructions; no allocation or nullable result.
 .global android_empty_widget
 android_empty_widget:
- add x0,x27,#0x46,lsl #12
- ldr x0,[x0,#0xf88]
+ add x0,x27,#0x4f,lsl #12
+ ldr x0,[x0,#0xfc0]
  ret
 android_image_original:
  stp x29,x30,[x15,#-16]!
@@ -163,7 +163,7 @@ android_text_inline:
  // The existing frame boxes the Color at its original allocation PC.
  // Retain provider alpha, and normalize the foreground to white.
  orr w4,w4,#0xffffff
- stur x4,[x29,#-0x30]
+ stur x4,[x29,#-0x28]
  b android_text_continue
 android_spanned_text:
  orr w3,w3,#0xffffff
@@ -334,14 +334,14 @@ source_tag_canonical:
  add x30,x30,:lo12:source_tag_return
  br x16
 source_tag_hero:
- mov x17,#-0x128
+ mov x17,#-0x130
  ldr x3,[x29,x17]
  mov x10,x0
 .global source_tag_prefix
 source_tag_prefix:
  // Replay the recommendation prefix selected by HeroTagResolver.getPrefix.
- add x0,x27,#0xb,lsl #12
- ldr x0,[x0,#0x158]
+ add x0,x27,#0x1e,lsl #12
+ ldr x0,[x0,#0x238]
  mov x16,x0
  mov x0,x10
  ldur w17,[x3,#7]
@@ -495,8 +495,8 @@ badge_background:
  mov x16,x1
 badge_white_pool:
  // Replay the current binary's white Color load from the text constructor.
- add x1,x27,#0xb,lsl #12
- ldr x1,[x1,#0xb48]
+ add x1,x27,#0x1b,lsl #12
+ ldr x1,[x1,#0xbc0]
  mov x0,x1
  mov x1,x16
  b badge_background_continue

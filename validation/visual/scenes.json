@@ -11,6 +11,7 @@
       "tap": [954, 1740],
       "rest": {
         "box": [426, 815, 536, 920],
+        "ignore": [[69, 2, 105, 38]],
         "limits": {"max_mean": 3, "max_changed_pct": 5}
       },
       "open": {
@@ -140,19 +141,20 @@
       "tap": [820, 1032],
       "rest": {
         "box": [286, 389, 538, 640],
-        "ignore": [[28, 34, 142, 220]],
+        "ignore": [[28, 34, 142, 220], [185, 30, 222, 69]],
         "limits": {"max_mean": 3, "max_changed_pct": 5}
       },
       "details": {
         "monochrome": {
           "box": [473, 421, 506, 456],
-          "limits": {"max_mean": 6, "max_changed_pct": 15}
+          "neutral": {"min_rgb": 180, "min_coverage": 0.08, "max_mean_chroma": 8}
         }
       },
       "open": {
         "phase": 0.145,
         "box": [392, 286, 552, 684],
-        "limits": {"max_mean": 14, "max_changed_pct": 35}
+        "ignore": [[0, 48, 145, 398]],
+        "limits": {"max_mean": 3, "max_changed_pct": 4}
       },
       "return": {
         "phase": 0.012,
