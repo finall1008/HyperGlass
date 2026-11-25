@@ -478,6 +478,40 @@ material_workspace_scroll:
  bl capture_bridge
  ldr x30,[x15],#16
  b material_scroll_target
+.section .icon_retake,"ax"
+.global icon_retake
+icon_retake:
+ // Element._retakeInactiveElement: x3 holds the key's element and x4 its
+ // parent; FP-8 and FP-0x10 hold this and newWidget. A nonzero x16 keeps the
+ // element in place and returns null from the Dart frame's own epilogue.
+ str x30,[x15,#-16]!
+ mov x16,#13
+ bl capture_bridge
+ ldr x30,[x15],#16
+ cbnz x16,icon_retake_none
+ stur x4,[x29,#-0x10]
+ ret
+icon_retake_none:
+ mov x0,x22
+ mov x15,x29
+ ldp x29,x30,[x15],#16
+ ret
+.section .icon_register,"ax"
+.global icon_register
+icon_register:
+ // Element.mount: flags hold the GlobalKey class-range test, x2 the key and
+ // FP-8 the element. The registration call follows; its skip target is the
+ // instruction after that call, 0x1c bytes past the return address.
+ b.hi icon_register_skip
+ str x30,[x15,#-16]!
+ mov x16,#14
+ bl capture_bridge
+ ldr x30,[x15],#16
+ cbnz x16,icon_register_skip
+ ret
+icon_register_skip:
+ add x30,x30,#0x1c
+ ret
 #endif
 
 .section .badge,"ax"

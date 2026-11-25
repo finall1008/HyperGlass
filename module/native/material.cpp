@@ -85,6 +85,19 @@ struct MaterialDraw {
  std::optional<bool> resting;
 };
 thread_local MaterialDraw* active_draw=nullptr;
+thread_local bool export_target_drawn=false;
+// Field diagnostics for snapshot exports that cannot render the target as
+// glass. Each message is limited to one line per second.
+void report_export_fallback(unsigned kind,bool drawn,bool pinned){
+ static std::atomic<int64_t> last_missing{0},last_unpinned{0};
+ auto report=[](std::atomic<int64_t>&last){
+  int64_t now=std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+  int64_t previous=last.load(std::memory_order_relaxed);
+  return now-previous>=1000&&last.compare_exchange_strong(previous,now,std::memory_order_relaxed);
+ };
+ if(!drawn){if(report(last_missing))LOG("Snapshot export stage=%u drew no glass plate at its target",kind);}
+ else if(kind==2&&!pinned&&report(last_unpinned))LOG("Return snapshot used the live backdrop: no resting desktop material");
+}
 struct BlurCacheKey {
  alignas(8) uint8_t bytes[32]{};
 };
@@ -168,7 +181,10 @@ void material_raster(uintptr_t closure){
   view&=view_mask;
  }
  if(export_target&&(export_kind==1||export_kind==2))export_inputs=&inputs;
+ const bool previous_drawn=export_target_drawn;export_target_drawn=false;
  original_raster(closure);
+ if(export_inputs)report_export_fallback(export_kind,export_target_drawn,pin.active);
+ export_target_drawn=previous_drawn;
  finish_export_home_pin(pin);
  active_pin=previous_pin;
  if(export_kind==1&&export_inputs&&!inputs.textures.empty()){
@@ -396,6 +412,7 @@ bool material_draw(uintptr_t canvas,const void*filter,const void*rect,const void
   if(export_kind==2&&!saved.empty())*export_inputs=std::move(saved.mapped());
   export_inputs->target=key;texture_capture=true;
  }
+ export_target_drawn|=target_draw;
  MaterialDraw draw{r,target_draw,texture_capture,0,{}};
  auto*previous=active_draw;active_draw=&draw;
  bool ok=original_draw(canvas,filter,rect,clip,view,has_view,backdrop,has_backdrop,alpha);

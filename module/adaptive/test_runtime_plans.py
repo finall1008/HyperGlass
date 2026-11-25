@@ -39,6 +39,33 @@ for planpath,imagepath in zip(sys.argv[1::2],sys.argv[2::2]):
   u.reg_write(R.UC_ARM64_REG_SP,0x2ee000);q(u,0x300070,0x12345)
   return u
  target=Image(Path(imagepath))
+ def icon_patch(owner,symbol):
+  start,size,_=target.names[owner][0]
+  gateway=address(symbols[symbol])
+  sites=[at for at,raw,group in p['patches'] if group==2 and len(raw)==8
+         and branch_target(int.from_bytes(bytes.fromhex(raw),'little'),at)==gateway]
+  assert len(sites)==1,(Path(planpath).name,symbol,sites)
+  site,=sites
+  assert start<=site-base<start+size and wi(u,site)&0xfc000000==0x94000000
+  return site,struct.unpack('<I',target.read(site-base,4))[0]
+ u=setup()
+ retake,spill=icon_patch('Element._retakeInactiveElement','icon_retake')
+ mount,branch=icon_patch('Element.mount','icon_register')
+ assert spill==0xf81f03a4 and branch&0xff00001f==0x54000008
+ fp=u.reg_read(regs[29]);parent=heap+0x13001
+ q(u,fp-0x10,nil);u.reg_write(regs[4],parent)
+ u.emu_start(retake,retake+4,count=2000)
+ assert u.reg_read(R.UC_ARM64_REG_PC)==retake+4 and qi(u,fp-0x10)==parent
+ assert u.reg_read(regs[16])==0 and u.reg_read(regs[15])==0x2f0000
+ for flags,taken in [(0x20000000,True),(0x60000000,False),(0x80000000,False)]:
+  u=setup();u.reg_write(R.UC_ARM64_REG_NZCV,flags)
+  resume=branch_target(branch,mount) if taken else mount+4
+  u.emu_start(mount,resume,count=2000)
+  assert u.reg_read(R.UC_ARM64_REG_PC)==resume and u.reg_read(R.UC_ARM64_REG_NZCV)==flags
+  assert u.reg_read(regs[15])==0x2f0000
+  if not taken:assert u.reg_read(regs[16])==0
+ print('PASS icon GlobalKey bridges replay the parent spill and class-range branch:',Path(planpath).name,flush=True)
+ if Path(planpath).stem not in ('reference','future'):continue
  detector,size,_=target.names['SceneTransitionDetector.detectSceneTransition'][0]
  sender=target.names['SceneAnimationSignalManager.sendSignal'][0][0]
  gateway=address(symbols['material_scene_signal'])

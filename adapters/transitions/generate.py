@@ -45,7 +45,7 @@ linked=ELFFile(open(H/'capture.elf','rb'))
 # into a private range at runtime. The limits bound each section's link slot.
 limits={'.capture_root':0xac8,'.widget_helpers':0x300,'.capture_meta':0x25c,'.hooks':0xe0,'.capture_small':0x1d8,'.limit_test':0xc0,'.bridge':0x140,'.text_color':0xe4}
 limits['.badge']=64
-if flags:limits.update({'.capture_config':156,'.widget_spans':12,'.widget_wrap':96,'.widget_image_filter':20,'.maml_repaint':64,'.material_scene':64,'.material_scroll':64,'.detached_capture':4096})
+if flags:limits.update({'.capture_config':156,'.widget_spans':12,'.widget_wrap':96,'.widget_image_filter':20,'.maml_repaint':64,'.material_scene':64,'.material_scroll':64,'.detached_capture':4096,'.icon_retake':64,'.icon_register':64})
 for sec in linked.iter_sections():
  if sec['sh_type']in ['SHT_REL','SHT_RELA']:assert sec['sh_size']==0
  if sec['sh_flags']&2 and sec['sh_size']:assert sec.name in limits,sec.name

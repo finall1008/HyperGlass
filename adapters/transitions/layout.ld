@@ -16,6 +16,8 @@ SECTIONS {
  .material_scene 0x2009180 : { *(.material_scene) }
  .material_scroll 0x20091c0 : { *(.material_scroll) }
  .detached_capture 0x2009200 : { *(.detached_capture) }
+ .icon_retake 0x200a200 : { *(.icon_retake) }
+ .icon_register 0x200a240 : { *(.icon_register) }
  /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) }
 }
 async_scene_return = 0x1a7efa0;

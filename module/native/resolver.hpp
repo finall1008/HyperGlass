@@ -47,6 +47,14 @@ using Patch = hg_patch;
 struct MamlRepaintLayout {
  uint32_t field_table=0, tag_map=0, binding=0, build_owner=0, element_map=0, string_class=0;
 };
+// Element._retakeInactiveElement guard. A Hero flight inflates copies of an
+// icon's subtree outside the attached ShortcutIconWidget; offsets and the
+// build selector come from the running ELF.
+struct IconRetakeLayout {
+ uint32_t parent=0, widget=0, key=0, controller=0, sentinel=0, capture_key=0, build_selector=0;
+ uintptr_t icon_build=0;
+ uint32_t owner=0;
+};
 struct Resolved {
  std::vector<Patch> patches;
  uintptr_t shadow=0;size_t shadow_size=0;uint32_t ready=0;
@@ -54,6 +62,7 @@ struct Resolved {
  std::vector<uint32_t> addresses;
  std::vector<std::pair<uint32_t,uintptr_t>> adapter_pages;
  MamlRepaintLayout maml_repaint;
+ IconRetakeLayout icon_retake;
  std::string diagnostic;
 };
 class Locator {

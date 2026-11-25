@@ -289,4 +289,7 @@ void capture_dispatch(P *r){
  else if(mode==4){unsigned mark=*(uint32_t *)(r[1]+11);if((mark>>25)==0x15)r[2]=((P)mark<<32)|(uint32_t)r[2];}
  else if(mode==5){*(uint32_t *)(r[3]+11)=(uint32_t)(r[1]>>32);r[1]=(uint32_t)r[1];}
  else if(mode==6)refresh_scene(fp,heap,nil);
+ // Icon GlobalKey guards keep stock reparenting and registration unless the
+ // runtime decides otherwise.
+ else if(mode==13||mode==14)r[15]=0;
 }

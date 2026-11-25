@@ -118,6 +118,8 @@ void prepare_capture(uintptr_t*r,double&bounds_x,double&bounds_y){
 void select_maml_repaint_key(uintptr_t*registers);
 void observe_viewport_density(const uintptr_t*registers);
 void observe_material_scene(const uintptr_t*registers);
+uintptr_t keep_icon_boundary(uintptr_t*registers);
+uintptr_t keep_icon_registration(uintptr_t*registers);
 void observe_workspace_scroll(const uintptr_t*r){
  const uintptr_t value=r[2],nil=r[21];
  if(value!=nil+0x20&&value!=nil+0x30)return;
@@ -132,6 +134,8 @@ void export_dispatch(uintptr_t*r){
  if(mode==10){observe_viewport_density(r);return;}
  if(mode==11){observe_material_scene(r);return;}
  if(mode==12){observe_workspace_scroll(r);return;}
+ if(mode==13){r[15]=keep_icon_boundary(r);return;}
+ if(mode==14){r[15]=keep_icon_registration(r);return;}
  double bounds_x=0,bounds_y=0;
  if(mode==0)prepare_capture(r,bounds_x,bounds_y);
  original_dispatch(r);
@@ -320,6 +324,78 @@ bool mounted_key(const DartMapEntries&elements,uint32_t key){
  for(uint32_t i=0;i<elements.size;i+=2)
   if(dart_value<uint32_t>(elements.data+0xf+4*i)==key)return true;
  return false;
+}
+// A Hero flight builds copies of an icon's subtree in its overlay shuttle and
+// in MultiFlyUnderlay, outside the ShortcutIconWidget that owns the capture
+// GlobalKey. GlobalKey reparenting would move the one keyed boundary between
+// those copies and leave the visible one empty. Keep a boundary in place while
+// its element is attached, and keep the attached icon's registration.
+struct IconKeyScope {
+ const hg::IconRetakeLayout&abi;
+ uintptr_t heap,nil,dispatch,sentinel;
+ bool object(uintptr_t value)const{return (value&1)&&value!=nil;}
+ uintptr_t ref(uintptr_t value,uint32_t offset)const{return heap+dart_value<uint32_t>(value+offset);}
+ uintptr_t root(uintptr_t element)const{
+  for(unsigned depth=0;depth<4096;depth++){
+   uintptr_t parent=ref(element,abi.parent);
+   if(!object(parent))return element;
+   element=parent;
+  }
+  return 0;
+ }
+ // The nearest ShortcutIconWidget ancestor decides. Its class dispatches
+ // build to ShortcutIconWidget.build; only then is its controller read.
+ bool owns(uintptr_t element,uintptr_t key)const{
+  for(unsigned depth=0;depth<64&&object(element);depth++,element=ref(element,abi.parent)){
+   const uintptr_t widget=ref(element,abi.widget);
+   if(!object(widget))continue;
+   const uintptr_t cid=dart_value<uint32_t>(widget-1)>>12;
+   if(dart_value<uintptr_t>(dispatch+8*(cid+abi.build_selector))!=abi.icon_build)continue;
+   const uintptr_t controller=ref(widget,abi.controller);
+   return object(controller)&&controller!=sentinel&&ref(controller,abi.capture_key)==key;
+  }
+  return false;
+ }
+};
+IconKeyScope icon_key_scope(const uintptr_t*r){
+ const auto&abi=images[0].result.icon_retake;
+ return {abi,r[27]<<32,r[21],r[20],abi.icon_build?dart_value<uintptr_t>(r[26]+abi.sentinel):0};
+}
+// Element._retakeInactiveElement: x3 is the key's current element, x4 its
+// parent, FP-8 the inflating parent and FP-0x10 the new widget. A nonzero
+// result inflates a separate element instead of moving the current one.
+uintptr_t keep_icon_boundary(uintptr_t*r){
+ const auto scope=icon_key_scope(r);
+ if(!scope.abi.icon_build)return 0;
+ const uintptr_t holder=r[3],element=dart_value<uintptr_t>(r[28]-8),widget=dart_value<uintptr_t>(r[28]-0x10);
+ if(!scope.object(holder)||!scope.object(r[4])||!scope.object(element)||!scope.object(widget))return 0;
+ const uintptr_t key=scope.ref(widget,scope.abi.key);
+ // A detached holder is a legitimate move out of a deactivated subtree.
+ const uintptr_t live=scope.root(element);
+ if(!scope.object(key)||!live||scope.root(holder)!=live)return 0;
+ // Only the icon capture key is guarded; other GlobalKeys keep stock moves.
+ return scope.owns(element,key)!=scope.owns(holder,key);
+}
+// Element.mount: x2 is the GlobalKey and FP-8 the element. Its BuildOwner is
+// loaded from the element after this class-range test.
+// A copy leaves an attached icon's registration in place, so the copy's
+// unmount cannot unregister the key that SF captures resolve.
+uintptr_t keep_icon_registration(uintptr_t*r){
+ const auto scope=icon_key_scope(r);
+ const auto&registry_abi=images[0].result.maml_repaint;
+ if(!scope.abi.icon_build||!registry_abi.element_map)return 0;
+ const uintptr_t key=r[2],element=dart_value<uintptr_t>(r[28]-8);
+ if(!scope.object(key)||!scope.object(element))return 0;
+ const uintptr_t owner=scope.ref(element,scope.abi.owner);
+ if(!scope.object(owner))return 0;
+ auto entries=dart_map_entries(scope.ref(owner,registry_abi.element_map),scope.heap,scope.nil);
+ uintptr_t holder=0;
+ for(uint32_t i=0;i<entries.size;i+=2)
+  if(dart_value<uint32_t>(entries.data+0xf+4*i)==uint32_t(key)){holder=scope.heap+dart_value<uint32_t>(entries.data+0x13+4*i);break;}
+ if(!scope.object(holder)||holder==element)return 0;
+ const uintptr_t live=scope.root(element);
+ if(!live||scope.root(holder)!=live)return 0;
+ return scope.owns(holder,key)&&!scope.owns(element,key);
 }
 void select_maml_repaint_key(uintptr_t*r){
  const auto&abi=images[0].result.maml_repaint;

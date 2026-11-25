@@ -827,6 +827,126 @@ static bool plan_maml_repaint(const ElfImage&image,uintptr_t live,uintptr_t adap
  return true;
 }
 
+// A Hero flight inflates the icon's keyed capture boundary again in its
+// overlay shuttle and in MultiFlyUnderlay. GlobalKey reparenting would then
+// detach the boundary from the attached icon or from the visible copy. Guard
+// the parent spill in _retakeInactiveElement, after the original lookup and
+// Widget.canUpdate check, and derive every Dart field the guard reads.
+static bool plan_icon_retake(const ElfImage&image,uintptr_t live,uintptr_t adapter,uintptr_t registration_adapter,Resolved&out){
+ auto retakes=image.named("Element._retakeInactiveElement");
+ auto elements=image.named("GlobalKey._currentElement");
+ auto updates=image.named("Widget.canUpdate");
+ auto widgets=image.named("Element.widget");
+ auto stateless=image.named("StatelessElement.build");
+ auto desktop=image.named("ShortcutIconWidget.buildDesktopIcon");
+ auto icon_build=image.named("ShortcutIconWidget.build");
+ auto capture=image.named("SfAnimIconCapture._buildLayersFromIconInfo");
+ auto controllers=image.named("ShortcutIconGetxController.get");
+ if(retakes.size()!=1||elements.size()!=1||updates.size()!=1||widgets.size()!=1||stateless.size()!=1||
+    desktop.size()!=1||icon_build.size()!=1||capture.size()!=1||controllers.size()!=1)return false;
+ const auto&retake=retakes.front();
+ if(!dart_frame(image,retake)||(image.word(retake.value+8)&0xffc003ff)!=0xd10001ef)return false;
+ // (this, key, newWidget) arrive in x1..x3. The prologue spills this at
+ // FP-8 and newWidget at FP-0x10 before looking up the key's element.
+ const uint32_t shuffle[]={0xaa0203e0,0xaa0303f0,0xaa0203e3,0xaa1003e2,0xaa0103f0,0xaa0303e1,0xaa1003e3,0xf81f83a3,0xf81f03a2};
+ for(size_t i=0;i<sizeof(shuffle)/sizeof(shuffle[0]);i++)if(image.word(retake.value+12+4*i)!=shuffle[i])return false;
+ auto lookups=direct_calls(image,retake,elements.front().value);
+ auto compares=direct_calls(image,retake,updates.front().value);
+ const uint64_t lookup=retake.value+12+4*9;
+ // A missing element returns null through the function's own epilogue.
+ if(lookups.size()!=1||lookups.front()!=lookup||compares.size()!=1||
+    image.word(lookup+4)!=0xaa0003e2||image.word(lookup+8)!=0xf81e83a2||image.word(lookup+12)!=0x6b16005f||
+    (image.word(lookup+16)&0xff00001f)!=0x54000001||image.word(lookup+20)!=0xaa1603e0||
+    image.word(lookup+24)!=0xaa1d03ef||image.word(lookup+28)!=0xa8c179fd||image.word(lookup+32)!=0xd65f03c0)return false;
+ uint64_t site=0;uint32_t parent=0;
+ for(uint64_t pc=compares.front()+4;pc+12<=retake.value+retake.size;pc+=4){
+  uint32_t load=image.word(pc);
+  if(image.word(pc-4)!=0xf85e83a3||(load&0xffe00fff)!=0xb8400064||image.word(pc+4)!=0x8b1c8084||
+     image.word(pc+8)!=0xf81f03a4||image.word(pc+12)!=0x6b16009f||(image.word(pc+16)&0xff00001f)!=0x54000000)continue;
+  if(site)return false;
+  site=pc+8;parent=uint32_t(instruction_immediate(load));
+ }
+ if(!site)return false;
+
+ // Element.widget is a leaf load of Element._widget with a null check.
+ const uint64_t getter=widgets.front().value;
+ uint32_t widget=image.word(getter);
+ if((widget&0xffe00fff)!=0xb8400020||image.word(getter+4)!=0x8b1c8000||image.word(getter+8)!=0x6b16001f)return false;
+ // Widget.canUpdate compares the receiver and argument keys at one offset.
+ uint32_t key=0;
+ for(uint64_t pc=updates.front().value;pc+20<=updates.front().value+updates.front().size;pc+=4){
+  uint32_t first=image.word(pc+8),second=image.word(pc+16);
+  if(image.word(pc)!=0xf85f83a1||image.word(pc+4)!=0xf85f03a0||(first&0xffe00fff)!=0xb8400022||
+     image.word(pc+12)!=0x8b1c8042||(second&0xffe00fff)!=0xb8400001||
+     instruction_immediate(first)!=instruction_immediate(second))continue;
+  key=uint32_t(instruction_immediate(first));break;
+ }
+ // buildDesktopIcon loads the late controller and compares it with the
+ // uninitialized-late sentinel from the object pool.
+ uint32_t controller=0,sentinel=0;
+ for(uint64_t pc=desktop.front().value+16;pc+16<=desktop.front().value+std::min<uint64_t>(desktop.front().size,64);pc+=4){
+  uint32_t load=image.word(pc),pool=image.word(pc+8);
+  // x2 holds the receiver, copied from x1 just before this load.
+  if((image.word(pc-4)!=0xaa0103e2&&image.word(pc-8)!=0xaa0103e2)||(load&0xffe00fff)!=0xb8400040||
+     image.word(pc+4)!=0x8b1c8000||(pool&0xffc003ff)!=0xf9400370||image.word(pc+12)!=0x6b10001f)continue;
+  controller=uint32_t(instruction_immediate(load));sentinel=uint32_t(instruction_immediate(pool));break;
+ }
+ // The capture reads controller.captureKey before GlobalKey._currentElement.
+ uint32_t capture_key=0;unsigned captures=0;
+ auto controller_calls=direct_calls(image,capture.front(),controllers.front().value);
+ for(uint64_t call:direct_calls(image,capture.front(),elements.front().value)){
+  uint32_t value=image.word(call-12),read=image.word(call-8);
+  if((value&0xffe0001f)!=0xd2800011||(read&0xfffffc1f)!=0xb8716801||image.word(call-4)!=0x8b1c8021||
+     std::none_of(controller_calls.begin(),controller_calls.end(),[&](uint64_t pc){return pc<call&&call-pc<=64;}))continue;
+  capture_key=uint32_t(instruction_immediate(value));captures++;
+ }
+ // StatelessElement.build calls widget.build through the dispatch table.
+ uint32_t selector=0;unsigned dispatches=0;
+ for(uint64_t pc=stateless.front().value+8;pc+12<=stateless.front().value+stateless.front().size;pc+=4){
+  uint32_t low=image.word(pc-8),high=image.word(pc-4);
+  if((low&0xffe0001f)!=0xd2800011||(high&0xffe0001f)!=0xf2a00011||image.word(pc)!=0x8b11001e||
+     image.word(pc+4)!=0xf87e7abe||image.word(pc+8)!=0xd63f03c0)continue;
+  selector=uint32_t(instruction_immediate(low)|instruction_immediate(high));dispatches++;
+ }
+ if(!parent||!widget||!key||!controller||!sentinel||captures!=1||!capture_key||dispatches!=1||!selector)return false;
+
+ // Element.mount inlines the GlobalKey class-range test before registering
+ // owner.registry[key] = this. A flight copy must not replace the attached
+ // icon's registration, whose later unmount would then drop the key.
+ auto mounts=image.named("Element.mount");
+ if(mounts.size()!=1||!dart_frame(image,mounts.front())||image.word(mounts.front().value+20)!=0xf81f83a1)return false;
+ uint64_t range=0,register_call=0;uint32_t owner_field=0;
+ for(uint64_t pc=mounts.front().value+24;pc+44<=mounts.front().value+mounts.front().size;pc+=4){
+  uint32_t load=image.word(pc),owner=image.word(pc+40);
+  if((load&0xffe00fff)!=0xb8400002||uint32_t(instruction_immediate(load))!=key||image.word(pc+4)!=0x8b1c8042||
+     image.word(pc+8)!=0xf85ff040||image.word(pc+12)!=0xd34c7c00||(image.word(pc+16)&0xffe0001f)!=0x92800011||
+     image.word(pc+20)!=0x8b110010||(image.word(pc+24)&0xffc003ff)!=0xf100021f||image.word(pc+28)!=(0x54000008|((0x20/4)<<5))||
+     image.word(pc+32)!=0xf85f83a0||(image.word(pc+36)&0xffe00fff)!=0xb8400001||owner!=0x8b1c8021||
+     image.word(pc+44)!=0x6b16003f||(image.word(pc+48)&0xff00001f)!=0x54000000||image.word(pc+52)!=0xaa0003e3||
+     (image.word(pc+56)&0xfc000000)!=0x94000000)continue;
+  if(range)return false;
+  range=pc+28;register_call=pc+56;owner_field=uint32_t(instruction_immediate(image.word(pc+36)));
+ }
+ if(!range||!owner_field)return false;
+ // The registration body stores into BuildOwner's GlobalKey registry, the
+ // same map that GlobalKey._currentElement reads.
+ const uint64_t registration=branch_target(image.word(register_call),register_call);
+ uint32_t registry=image.word(registration+8);
+ if(!image.executable(registration,40)||image.word(registration)!=0xa9bf79fd||image.word(registration+4)!=0xaa0f03fd||
+    (registry&0xffe00fff)!=0xb8400020||uint32_t(instruction_immediate(registry))!=out.maml_repaint.element_map||
+    image.word(registration+12)!=0x8b1c8000||image.word(registration+16)!=0xaa0003e1||
+    (image.word(registration+20)&0xfc000000)!=0x94000000||image.word(registration+24)!=0xaa1603e0||
+    image.word(registration+28)!=0xaa1d03ef||image.word(registration+32)!=0xa8c179fd||image.word(registration+36)!=0xd65f03c0)return false;
+
+ std::vector<Patch> patches;
+ if(!add_widget_branch(image,live,site,adapter,2,true,patches)||
+    !add_widget_branch(image,live,range,registration_adapter,2,true,patches))return false;
+ out.icon_retake={parent,uint32_t(instruction_immediate(widget)),key,controller,sentinel,capture_key,selector,
+                  live+uintptr_t(icon_build.front().value),owner_field};
+ out.patches.insert(out.patches.end(),patches.begin(),patches.end());
+ return true;
+}
+
 bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolved&out,bool allocate){
  ElfImage image;std::string error;if(!image.load(path,error)){out.diagnostic=error;return false;}
  SceneFrame scene;
@@ -976,12 +1096,14 @@ bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolv
    ready&=~2u;out.diagnostic+="live icon boundary cache guard unresolved; ";break;
   }
   if(ready&2){
-   uintptr_t repaint=0,material_scene=0,material_scroll=0;
+   uintptr_t repaint=0,material_scene=0,material_scroll=0,icon_retake=0,icon_register=0;
    for(size_t i=0;i<program.unit_count;i++){
     const auto&unit=program.units[i];
     if(!strcmp(unit.label,".maml_repaint"))repaint=adapter_address(out,unit.source);
     if(!strcmp(unit.label,".material_scene"))material_scene=adapter_address(out,unit.source);
     if(!strcmp(unit.label,".material_scroll"))material_scroll=adapter_address(out,unit.source);
+    if(!strcmp(unit.label,".icon_retake"))icon_retake=adapter_address(out,unit.source);
+    if(!strcmp(unit.label,".icon_register"))icon_register=adapter_address(out,unit.source);
    }
    if(!repaint||!plan_maml_repaint(image,live,repaint,out)){
     ready&=~2u;out.diagnostic+="MAML repaint registry or SF capture ABI unresolved; ";
@@ -989,6 +1111,9 @@ bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolv
     ready&=~2u;out.diagnostic+="material scene signal ABI unresolved; ";
    }else if(!material_scroll||!plan_material_scroll(image,live,material_scroll,out.patches)){
     ready&=~2u;out.diagnostic+="workspace scroll signal ABI unresolved; ";
+   }else if(!icon_retake||!icon_register||!plan_icon_retake(image,live,icon_retake,icon_register,out)){
+    // Without the guards, Hero flight copies keep stock GlobalKey reparenting.
+    out.icon_retake={};out.diagnostic+="icon boundary GlobalKey guard unresolved; ";
    }
   }
  }

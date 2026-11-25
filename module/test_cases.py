@@ -67,4 +67,6 @@ def report_compatibility(resolve):
 
 
 def runtime_plan_arguments(plans):
-    return [plans / 'reference.json', REFERENCE / 'libapp.so', plans / 'future.json', plans / 'future.so']
+    cases = [('reference', REFERENCE / 'libapp.so'), ('future', plans / 'future.so')]
+    cases += [(mode, plans / (mode + '.so')) for mode, groups in APP_FAILURES.items() if not groups & 2]
+    return [argument for name, file in cases for argument in (plans / (name + '.json'), file)]

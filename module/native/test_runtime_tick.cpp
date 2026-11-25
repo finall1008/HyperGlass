@@ -44,6 +44,56 @@ const uint32_t* test_viewport=nullptr;
 float viewport_density=0;
 bool test_capture_queue=false;
 std::vector<bool> scene_updates,scroll_updates;
+
+void test_icon_global_key(){
+ alignas(8) uint8_t objects[0x800]{};
+ const uintptr_t arena=(uintptr_t)objects+1,heap=arena&~uintptr_t(0xffffffff);
+ const uintptr_t nil=arena,sentinel=arena+0x20,key=arena+0x40,root=arena+0x60,
+                 icon=arena+0x80,copy=arena+0xa0,detached=arena+0xc0,holder=arena+0xe0,
+                 element=arena+0x100,icon_widget=arena+0x120,boundary_widget=arena+0x140,
+                 controller=arena+0x160,owner=arena+0x180,registry=arena+0x1a0,entries=arena+0x1c0;
+ auto field=[](uintptr_t address,uintptr_t value){
+  uint32_t compressed=uint32_t(value);memcpy((void*)address,&compressed,sizeof(compressed));
+ };
+ auto&result=images[0].result;
+ auto&abi=result.icon_retake;
+ abi={7,0xb,7,0x13,8,0xf,2,0x1234,0x1b};
+ auto&element_map=result.maml_repaint.element_map;element_map=0x1f;
+ uintptr_t dispatch[8]{},pool[]={0,sentinel},frame[]={boundary_widget,0,0},registers[31]{};
+ dispatch[abi.build_selector+3]=abi.icon_build;
+ for(auto node:{root,icon,copy,detached,holder,element})field(node+abi.widget,nil);
+ field(root+abi.parent,nil);field(detached+abi.parent,nil);
+ field(icon+abi.parent,root);field(copy+abi.parent,root);
+ field(icon+abi.widget,icon_widget);field(icon_widget-1,3<<12);
+ field(icon_widget+abi.controller,controller);field(controller+abi.capture_key,key);
+ field(sentinel+abi.capture_key,key); // A matching word must not make the sentinel a controller.
+ field(boundary_widget+abi.key,key);field(element+abi.widget,boundary_widget);
+ field(owner+element_map,registry);field(registry+0xf,entries);field(registry+0x13,4);
+ field(entries+0xb,4);field(entries+0xf,key);field(entries+0x13,holder);
+ field(element+abi.owner,owner);
+ registers[1]=element;registers[2]=key;registers[3]=holder; // x1 is not yet the BuildOwner at the guard.
+ registers[20]=(uintptr_t)dispatch;registers[21]=nil;registers[26]=(uintptr_t)pool;
+ registers[27]=heap>>32;registers[28]=(uintptr_t)(frame+2);
+ auto check=[&](uintptr_t holder_parent,uintptr_t new_parent,uintptr_t retake,uintptr_t registration){
+  field(holder+abi.parent,holder_parent);field(element+abi.parent,new_parent);
+  registers[4]=holder_parent;frame[1]=new_parent;
+  registers[15]=13;export_dispatch(registers);assert(registers[15]==retake);
+  frame[1]=element;
+  registers[15]=14;export_dispatch(registers);assert(registers[15]==registration);
+ };
+ check(detached,copy,0,0);
+ check(icon,copy,1,1);
+ check(icon,icon,0,0);
+ check(copy,icon,1,0);
+ field(icon_widget+abi.controller,sentinel);check(icon,copy,0,0);
+ field(icon_widget+abi.controller,controller);
+ // Another GlobalKey on the same subtree keeps stock reparenting.
+ field(controller+abi.capture_key,sentinel);check(icon,copy,0,0);
+ field(controller+abi.capture_key,key);
+ abi.icon_build=0;check(icon,copy,0,0);
+ abi={};element_map=0;
+ puts("PASS icon GlobalKey retake and registration distinguish attached owners, copies and detached holders");
+}
 }
 extern "C" bool hg_page_guard_ready(){
  if(settings_test)return true;
@@ -92,6 +142,7 @@ int main(){
  field(physical+15,1120.0);transform[0]=transform[5]=2.85;field(storage+0x17,transform);
  test_viewport=nullptr;
  puts("PASS live viewport initializes material density before any marked export and excludes detached layers");
+ test_icon_global_key();
  const auto signal=arena+1,type=arena+0x101,name=arena+0x201;
  images[0].result.maml_repaint.string_class=0x73;
  field(signal+7,uint32_t(type));field(type+0xf,uint32_t(name));

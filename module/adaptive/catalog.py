@@ -268,7 +268,7 @@ def catalogs():
  a.add_elf(EX/'icons/processor.elf',['.text.helper','.text'],1)
  a.add_elf(EX/'transitions/boundary.elf',['.message','.selector','.initialize'],2,physical=(0x1868e9c,))
  a.add_elf(EX/'transitions/capture.elf',['.capture_root','.hooks','.capture_small','.limit_test','.maml_repaint'],2)
- a.add_elf(EX/'transitions/capture.elf',['.material_scene','.material_scroll','.detached_capture'],2)
+ a.add_elf(EX/'transitions/capture.elf',['.material_scene','.material_scroll','.detached_capture','.icon_retake','.icon_register'],2)
  a.add_elf(EX/'transitions/capture.elf',['.text_color','.widget_helpers'],4)
  a.add_elf(EX/'transitions/capture.elf',['.widget_spans'],4)
  a.add_elf(EX/'transitions/capture.elf',['.badge'],32)
