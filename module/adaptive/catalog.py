@@ -45,6 +45,8 @@ class Catalog:
  def __init__(self,image):
   self.model=Model(image);self.units=[];self.config=[];self.config_source=0;self.constraints=[]
   self.widget_wrap=None
+  # Callee VA -> validated BL site; the adapter follows that call in the current ELF.
+  self.call_targets={}
   self.md=Cs(CS_ARCH_ARM64,CS_MODE_ARM);self.md.detail=True
  def add_elf(self,path,sections,group,physical=()):
   e=ELFFile(open(path,'rb'));symbols=list(e.get_section_by_name('.symtab').iter_symbols())
@@ -60,6 +62,7 @@ class Catalog:
  def unit_at(self,va):return next((u for u in self.units if u.source<=va<u.source+len(u.data)),None)
  def target(self,va,shadow_page=False):
   if shadow_page:return Target(va,-1,1)
+  if va in self.call_targets:return Target(0,self.model.add(self.call_targets[va]),2)
   unit=self.unit_at(va)
   if unit:
    if unit.shadow:return Target(va,-1,1)
@@ -355,6 +358,9 @@ def catalogs():
  # The same relocation pass is shared, with replay injection limited to AOT.
  Catalog.relocate(e)
  m=Catalog(REFS/'launcher-801027722/librust_maml_sdk.so')
+ # parse_original replays parse_dom's prologue, including its call to the
+ # compiler-outlined register save. Builds number that helper differently.
+ m.call_targets[0x5e7230]=0x5182e8
  m.add_elf(EX/'widgets/loader.elf',['.xml_helpers','.xml_attrs','.xml_transform','.xml_data'],8)
  rows=json.loads((EX/'widgets/profile.json').read_text())['patches']
  for r in rows:

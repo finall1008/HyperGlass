@@ -144,14 +144,20 @@ __attribute__((section(".detached_capture"),noinline))
 static unsigned detached_scene(P source,P parent,P heap,P nil,double *v,double *bounds,
                                P *view_slot,HgCaptureResult *result){
  const HgCapturePlacement *placement=&result->placement;
+ P view=placement->view;
+ // A resting-layer fallback takes the view from this frame's own slot.
+ if(view==HG_CAPTURE_VIEW_FROM_SLOT){
+  view=*view_slot;
+  if(view==nil||(view&1)||view>=(1u<<(HG_CAPTURE_VIEW_BITS+1)))return 0;
+ }
  if(!placement->viewport_width||v[0]<=0||v[0]!=v[5]||
     bounds[2]-bounds[0]!=placement->width||bounds[3]-bounds[1]!=placement->height||
-    (*view_slot!=nil&&*view_slot!=placement->view))return 0;
+    (*view_slot!=nil&&*view_slot!=view))return 0;
  double density=v[0],tx=placement->x+v[12]*placement->scale_x/density,
         ty=placement->y+v[13]*placement->scale_y/density;
  v[0]=placement->scale_x;v[5]=placement->scale_y;v[12]=tx;v[13]=ty;
  double epsilon=(load(parent+SLOT(HG_CAPTURE_ROUND_SLOT,-0x90))&16)?-0.001:0.001;
- set_capture(view_slot,placement->view,2,density,epsilon,placement,
+ set_capture(view_slot,view,2,density,epsilon,placement,
              (HgCaptureTransform){1,0,0,1,density},result,bounds);
  dirty_tree(source,heap,nil);
  return 2;
@@ -221,7 +227,23 @@ static unsigned full_scene(P fp,P data,P bounds,P heap,P nil,P thread,HgCaptureR
  double sx=a/ratio,sy=d/ratio;
  if(b!=0||c!=0||sx<0.5||sx>2||sy<0.5||sy>2)sx=sy=1;
  int ix=(int)(fx+0.5),iy=(int)(fy+0.5),w=(int)((r[2]-r[0])*ratio*sx+0.5),h=(int)((r[3]-r[1])*ratio*sy+0.5);
- if(ix<0||iy<0||w<=0||h<=0||ix+w>fw||iy+h>fh||fw>16383||fh>16383)return 0;
+ if(ix<0||iy<0||w<=0||h<=0||ix+w>fw||iy+h>fh||fw>16383||fh>16383){
+#ifdef HG_ADAPTIVE
+  // A container that left the viewport, such as the tablet dock during a
+  // fast gesture, renders the layer alone at its mounted or resting place.
+  if(kind!=3&&result->placement.viewport_width)
+   return detached_scene(source,parent,heap,nil,v,r,view_id,result);
+  // A layer rebuilt while the app was in front has no mounted placement.
+  // Report where it is; the runtime finds the icon it replaced and
+  // dispatches again with that icon's place.
+  if(kind!=3&&b==0&&c==0){
+   result->placement=(HgCapturePlacement){fx,fy,ratio*sx,ratio*sy,r[2]-r[0],r[3]-r[1],id,(unsigned)fw,(unsigned)fh};
+   result->layer=source;
+   result->identity=HG_CAPTURE_OFF_VIEWPORT;
+  }
+#endif
+  return 0;
+ }
  /* Native raster dispatch consumes the private material-stage marker. */
  double epsilon=(load(parent+SLOT(HG_CAPTURE_ROUND_SLOT,-0x90))&16)?-0.001:0.001;
 #ifdef HG_ADAPTIVE

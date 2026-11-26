@@ -69,6 +69,7 @@ patch(0x19b0f04,branch(0x19b0f04,0x19b0f48),'Retain transparent interior on stro
 patch(0x11b72c0,branch(0x11b72c0,0x18a95d8,True)+struct.pack('<I',0xf81c83a0)+branch(0x11b72c8,0x11b743c),'Apply grayscale color-matrix filtering to TextView compound drawables')
 for va in [0x10b5a98,0x10b64d4,0x10b7588]:patch(va,bytes.fromhex('e00316aa'),'Omit the Frame/Linear/Relative container paint call, retain provider geometry and foreground controls')
 patch(0x1b49114,branch(0x1b49114,0x1b49284),'Preserve captured rounded edges; native SF supplies the animated clip')
+patch(0x192e7c0,branch(0x192e7c0,0x192e7e4),'Quick-switch returns keep the SF window and icon animation that captures the glass icon')
 for va in [0x1588534,0x158853c]:patch(va,bytes.fromhex('1f2003d5'),'Enter the existing native glass host for Android widgets')
 patch(0x1588638,bytes.fromhex('1f2003d5'),'Use the folder glass presets at static fields 0x2090/0x2088 for Android hosts')
 for va in [0x1588730,0x15888a8]:patch(va,taken(va),'Clip animated and resting Android glass hosts using their computed widget corner radius')

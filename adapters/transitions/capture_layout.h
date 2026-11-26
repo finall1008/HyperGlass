@@ -13,6 +13,12 @@
 
 // Metadata carried between the synchronous Dart bridge and the raster task.
 #define HG_CAPTURE_VIEW_BITS 12
+// Placement view for a resting-layer fallback: the capture frame's own view
+// slot names the view. View IDs are even, so this value never collides.
+#define HG_CAPTURE_VIEW_FROM_SLOT 1
+// Result identity of a layer whose container left the viewport without a
+// placement. The placement then holds where the layer is now.
+#define HG_CAPTURE_OFF_VIEWPORT 0xffffffffu
 #define HG_CAPTURE_TICKET_BITS 16
 #define HG_CAPTURE_RESULT_OFFSET 768
 #define HG_CAPTURE_RESULT_SIZE 112

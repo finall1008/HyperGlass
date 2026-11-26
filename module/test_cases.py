@@ -26,6 +26,9 @@ ENGINE_FAILURES = ('engine-layout', 'frame-info-layout', 'glass-cache-layout')
 # Engine fixture mode -> impeller::Context slots the resolver must decode.
 ENGINE_MIGRATIONS = {'context-slot-shift': [0xc0, 0xe8]}
 ENGINE_SLOTS = [0xb8, 0xe0]
+# MAML fixture mode -> live target of the replayed prologue call (ELF VA).
+MAML_MIGRATIONS = {'maml-outlined-move': 0x5e6a94}
+MAML_REPLAY_CALL = 0x33c3ec
 COMPATIBILITY = [
     ('9239', REFS / 'launcher-801029239/MiuiHome.apk', APK_LIB),
     ('9226', REFS / 'launcher-801029226/MiuiHome.apk', APK_LIB),
@@ -45,11 +48,14 @@ def required_cases(out):
         run(sys.executable, H / 'adaptive/make_failure_fixture.py', app, mode, out / (mode + '.so'))
     for mode in (*ENGINE_FAILURES, *ENGINE_MIGRATIONS):
         run(sys.executable, H / 'adaptive/make_failure_fixture.py', ENGINE, mode, out / (mode + '.so'))
+    for mode in MAML_MIGRATIONS:
+        run(sys.executable, H / 'adaptive/make_failure_fixture.py', MAML, mode, out / (mode + '.so'))
     cases = [('reference', app, 0, FULL, ''), ('reference-apk', REFERENCE / 'MiuiHome.apk', 0, FULL, APK_LIB),
              ('engine', ENGINE, 1, 2, ''), ('maml', MAML, 2, 8, ''), ('future', out / 'future.so', 0, FULL, '')]
     cases += [(mode, out / (mode + '.so'), 0, FULL & ~groups, '') for mode, groups in APP_FAILURES.items()]
     cases += [(mode, out / (mode + '.so'), 1, 0, '') for mode in ENGINE_FAILURES]
     cases += [(mode, out / (mode + '.so'), 1, 2, '') for mode in ENGINE_MIGRATIONS]
+    cases += [(mode, out / (mode + '.so'), 2, 8, '') for mode in MAML_MIGRATIONS]
     return cases
 
 
@@ -60,8 +66,28 @@ def check_plan(name, plan):
         assert plan['patches'] == [], name
     if name == 'engine':
         assert plan['virtual_slots'] == ENGINE_SLOTS, name
+        # LayerState pointer, its visibility byte and the paint bounds.
+        assert plan['overlay_tracker'] == [0x80, 1, 8, 1], name
     if name in ENGINE_MIGRATIONS:
         assert plan['virtual_slots'] == ENGINE_MIGRATIONS[name], name
+    if name == 'maml':
+        assert maml_replay_target(plan) == 0x5e7230, name
+    if name in MAML_MIGRATIONS:
+        assert maml_replay_target(plan) == MAML_MIGRATIONS[name], name
+
+
+def maml_replay_target(plan):
+    """Return the ELF VA that the relocated prologue replay calls."""
+    for source, address, data, _ in plan['adapters']:
+        code = bytes.fromhex(data)
+        offset = MAML_REPLAY_CALL - source
+        if 0 <= offset <= len(code) - 4:
+            word = int.from_bytes(code[offset:offset + 4], 'little')
+            assert word >> 26 == 0x25, hex(word)
+            delta = word & 0x3ffffff
+            delta -= (delta & 0x2000000) << 1
+            return address + offset + 4 * delta - plan['base']
+    raise AssertionError('missing MAML prologue replay')
 
 
 def report_compatibility(resolve):

@@ -71,6 +71,21 @@ struct CaptureInputs {
 };
 std::mutex glass_mutex;
 std::map<GlassKey,CaptureInputs> opening_inputs;
+// Glass rects opening exports drew at rest, per context and backdrop ID. A
+// return export renders Home while the app is still in front. Glass resting
+// Home lacks, such as the full-screen layer behind the app, and glass whose
+// container moved, such as the raised tablet dock, would otherwise show a
+// different backdrop through the returning icon's translucent plate.
+using RestingRect=std::array<float,4>;
+std::map<uintptr_t,std::map<uint64_t,RestingRect>> resting_backdrops;
+constexpr size_t resting_backdrop_limit=512;
+struct ExportBackdrop {uintptr_t context;uint64_t id;RestingRect rect;};
+thread_local std::vector<ExportBackdrop>* export_backdrops=nullptr;
+// A moved container beneath a return target, such as the raised tablet dock,
+// and its offset to rest. Glass inside it without its own resting record,
+// such as an icon rebuilt since the opening, rests with the container.
+struct MovedContainer {RestingRect rect;std::array<float,2> shift;};
+thread_local std::optional<MovedContainer> export_container;
 thread_local std::optional<MaterialTarget> export_target;
 thread_local CaptureInputs* export_inputs=nullptr;
 struct BackdropSelection {uintptr_t context,generation;};
@@ -83,6 +98,15 @@ struct MaterialDraw {
  bool selected,texture_capture;
  unsigned texture_index=0;
  std::optional<bool> resting;
+ // Screen offset from this draw to its resting rect in a return export.
+ std::optional<std::array<float,2>> resting_shift;
+ // A return export recomputes this draw from the pinned Home backdrop. Live
+ // blur entries of the target and the glass beneath it, such as the dock,
+ // still hold the scene behind the app.
+ bool home_backdrop=false;
+ // Binds seen per shader slot. A pinned return can add blur passes before
+ // the composite, so saved inputs pair by slot occurrence, not bind order.
+ std::vector<std::pair<const void*,unsigned>> slot_binds;
 };
 thread_local MaterialDraw* active_draw=nullptr;
 thread_local bool export_target_drawn=false;
@@ -128,7 +152,7 @@ CacheRemove cache_remove=nullptr;
 
 bool material_try_get(uintptr_t cache,const void*key,const void*rect,void*entry,bool*found){
  if(export_kind==2&&active_pin&&active_pin->active&&key){
-  const bool target=active_draw&&active_draw->selected;
+  const bool target=active_draw&&active_draw->home_backdrop;
   if(target){
    if(found)*found=false;
   }else if(original_try_get(cache,key,rect,entry,found))return true;
@@ -143,7 +167,7 @@ bool material_try_get(uintptr_t cache,const void*key,const void*rect,void*entry,
  return original_try_get(cache,key,rect,entry,found);
 }
 bool material_try_get_tinted(uintptr_t cache,const void*key,const void*tint,uint32_t hash,void*out){
- if(export_kind==2&&active_pin&&active_pin->active&&active_draw&&active_draw->selected)return false;
+ if(export_kind==2&&active_pin&&active_pin->active&&active_draw&&active_draw->home_backdrop)return false;
  return original_try_get_tinted(cache,key,tint,hash,out);
 }
 void finish_export_home_pin(ExportPin&pin){
@@ -182,7 +206,26 @@ void material_raster(uintptr_t closure){
  }
  if(export_target&&(export_kind==1||export_kind==2))export_inputs=&inputs;
  const bool previous_drawn=export_target_drawn;export_target_drawn=false;
+ std::vector<ExportBackdrop> backdrops;
+ auto*previous_backdrops=export_backdrops;export_backdrops=export_kind==1&&export_inputs?&backdrops:nullptr;
+ auto previous_container=export_container;export_container.reset();
  original_raster(closure);
+ export_container=previous_container;
+ export_backdrops=previous_backdrops;
+ if(export_kind==1&&export_target_drawn&&!backdrops.empty()){
+  // An ID drawn at several rects has no single resting position.
+  std::map<std::pair<uintptr_t,uint64_t>,RestingRect> drawn;
+  for(const auto&item:backdrops){
+   auto[at,inserted]=drawn.try_emplace({item.context,item.id},item.rect);
+   if(!inserted&&at->second!=item.rect)at->second.fill(NAN);
+  }
+  std::lock_guard<std::mutex>lock(glass_mutex);
+  for(const auto&[key,rect]:drawn){
+   auto&rects=resting_backdrops[key.first];
+   if(rects.size()>=resting_backdrop_limit&&!rects.count(key.second))rects.clear();
+   rects[key.second]=rect;
+  }
+ }
  if(export_inputs)report_export_fallback(export_kind,export_target_drawn,pin.active);
  export_target_drawn=previous_drawn;
  finish_export_home_pin(pin);
@@ -336,6 +379,10 @@ void observe_home(uintptr_t context,bool resting,Clock::time_point now){
 using DrawMaterial=bool(*)(uintptr_t,const void*,const void*,const void*,uint64_t,uint64_t,uint64_t,uint64_t,float);
 DrawMaterial original_draw=nullptr;
 using BindTexture=bool(*)(uintptr_t,uint32_t,uint32_t,const void*,const void*,NativeRef*,uintptr_t);BindTexture original_bind=nullptr;
+bool restoring_inputs(){
+ return export_kind==2&&export_inputs&&export_home&&export_home->context==export_inputs->context&&
+        export_home->generation==export_inputs->generation;
+}
 bool material_bind(uintptr_t pass,uint32_t stage,uint32_t type,const void*slot,const void*metadata,NativeRef*texture,uintptr_t sampler){
  if(export_inputs&&active_draw&&active_draw->texture_capture&&texture->object){
   unsigned index=active_draw->texture_index++;
@@ -343,14 +390,17 @@ bool material_bind(uintptr_t pass,uint32_t stage,uint32_t type,const void*slot,c
    auto saved=std::make_unique<SavedTexture>();
    saved->texture=retained(*texture);saved->slot=slot;saved->stage=stage;saved->type=type;
    export_inputs->textures[index]=std::move(saved);
-  }else if(export_kind==2&&export_home&&export_home->context==export_inputs->context&&
-           export_home->generation==export_inputs->generation){
-   auto it=export_inputs->textures.find(index);
-   if(it!=export_inputs->textures.end()){
-    const auto&saved=*it->second;
-    if(saved.slot==slot&&saved.stage==stage&&saved.type==type){
-     released(*texture);*texture=retained(saved.texture);
-    }
+  }else if(restoring_inputs()){
+   auto&binds=active_draw->slot_binds;
+   auto seen=std::find_if(binds.begin(),binds.end(),[&](const auto&item){return item.first==slot;});
+   if(seen==binds.end())seen=binds.insert(binds.end(),{slot,0});
+   unsigned occurrence=seen->second++;
+   for(const auto&entry:export_inputs->textures){
+    const auto&saved=*entry.second;
+    if(saved.slot!=slot||saved.stage!=stage||saved.type!=type)continue;
+    if(occurrence--)continue;
+    released(*texture);*texture=retained(saved.texture);
+    break;
    }
   }
  }
@@ -375,7 +425,7 @@ void rest_screen_transform(float*matrix,const HgCaptureTransform&transform){
  }
 }
 bool material_uniform(uintptr_t pass,uint64_t binding,uint32_t type,void*view){
- if(active_draw&&binding==0&&(!export_kind||active_draw->selected)){
+ if(active_draw&&binding==0&&(!export_kind||active_draw->selected||active_draw->resting_shift)){
   const auto*words=(const uintptr_t*)view;
   uintptr_t buffer=words[2]?words[2]:words[0];
   // FrameInfo is the vertex binding. Its second matrix is the display
@@ -388,10 +438,19 @@ bool material_uniform(uintptr_t pass,uint64_t binding,uint32_t type,void*view){
      float density=display_density.load(std::memory_order_relaxed);
      if(density>0&&std::abs(matrix[12]-active_draw->rect[0])<1&&std::abs(matrix[13]-active_draw->rect[1])<1)
       active_draw->resting=resting_transform(matrix,active_draw->rect,density);
-    }else if(export_target&&export_target->transform.scale!=1&&
-             !resting_transform(matrix,active_draw->rect,export_target->transform.density)){
-     rest_screen_transform(matrix,export_target->transform);
-     copy_host(buffer,reinterpret_cast<const uint8_t*>(matrix),0,sizeof(matrix),words[3]+64);
+    }else{
+     bool changed=false;
+     if(active_draw->selected&&export_target&&export_target->transform.scale!=1&&
+        !resting_transform(matrix,active_draw->rect,export_target->transform.density)){
+      rest_screen_transform(matrix,export_target->transform);changed=true;
+     }
+     // Home backdrops are screen-space. Glass in a moved container samples
+     // them where it rests.
+     if(const auto&shift=active_draw->resting_shift){
+      for(unsigned i=0;i<16;i+=4){matrix[i]+=(*shift)[0]*matrix[i+3];matrix[i+1]+=(*shift)[1]*matrix[i+3];}
+      changed=true;
+     }
+     if(changed)copy_host(buffer,reinterpret_cast<const uint8_t*>(matrix),0,sizeof(matrix),words[3]+64);
     }
    }
   }
@@ -401,24 +460,71 @@ bool material_uniform(uintptr_t pass,uint64_t binding,uint32_t type,void*view){
 bool material_draw(uintptr_t canvas,const void*filter,const void*rect,const void*clip,uint64_t view,uint64_t has_view,uint64_t backdrop,uint64_t has_backdrop,float alpha){
  uintptr_t context=**(uintptr_t**)canvas;
  if(export_kind&&!export_context.object)export_context=retained(*(NativeRef*)*(uintptr_t*)canvas);
- ensure_export_home_pinned(context);
  const auto*r=(const float*)rect;
+ std::optional<std::array<float,2>> resting_shift;
+ if(has_backdrop&1){
+  if(export_backdrops)export_backdrops->push_back({context,backdrop,{r[0],r[1],r[2],r[3]}});
+  else if(export_kind==2){
+   std::lock_guard<std::mutex>lock(glass_mutex);
+   auto resting=resting_backdrops.find(context);
+   if(resting!=resting_backdrops.end()){
+    auto item=resting->second.find(backdrop);
+    // Only full-screen glass that resting Home never drew, such as the layer
+    // behind the app, is left out. Other unrecorded glass, including a
+    // rebuilt target icon, renders as before.
+    if(item==resting->second.end()){
+     if(r[2]-r[0]>=export_width*.9f&&r[3]-r[1]>=export_height*.9f)return true;
+    }else{
+     const auto&at=item->second;
+     if(!std::isnan(at[0])&&std::abs((at[2]-at[0])-(r[2]-r[0]))<.5f&&std::abs((at[3]-at[1])-(r[3]-r[1]))<.5f&&(at[0]!=r[0]||at[1]!=r[1]))
+      resting_shift=std::array<float,2>{at[0]-r[0],at[1]-r[1]};
+    }
+   }
+  }
+ }
+ ensure_export_home_pinned(context);
  const bool target_draw=export_target&&(export_kind==1||export_kind==2)&&
                      std::abs(r[0]-export_target->x)<=1&&std::abs(r[1]-export_target->y)<=1;
  bool texture_capture=false;
  if(target_draw&&export_inputs&&!export_inputs->target){
   auto quantize=[](float v){return int64_t(std::llround(double(v)*16));};
-  GlassKey key{context,(has_view&1)?view:0,{quantize(r[0]),quantize(r[1]),quantize(r[2]),quantize(r[3]),(has_backdrop&1)?int64_t(backdrop):0,int64_t(has_backdrop&1),int64_t(has_view&1)}};
+  // A backdrop ID identifies one glass draw across frames. Its container may
+  // move between opening and return, as the tablet dock does while an app is
+  // in front, so only the size accompanies the ID.
+  const bool identified=has_backdrop&1;
+  const int64_t left=identified?0:quantize(r[0]),top=identified?0:quantize(r[1]);
+  const int64_t right=identified?quantize(r[2]-r[0]):quantize(r[2]),bottom=identified?quantize(r[3]-r[1]):quantize(r[3]);
+  GlassKey key{context,(has_view&1)?view:0,{left,top,right,bottom,identified?int64_t(backdrop):0,int64_t(identified),int64_t(has_view&1)}};
   std::lock_guard<std::mutex>lock(glass_mutex);
   auto saved=opening_inputs.extract(key);
   if(export_kind==2&&!saved.empty())*export_inputs=std::move(saved.mapped());
   export_inputs->target=key;texture_capture=true;
  }
  export_target_drawn|=target_draw;
- MaterialDraw draw{r,target_draw,texture_capture,0,{}};
+ const bool beneath_target=export_kind==2&&export_target&&r[0]<=export_target->x+1&&r[1]<=export_target->y+1&&
+                           r[2]>=export_target->x+1&&r[3]>=export_target->y+1;
+ if(export_kind==2&&(has_backdrop&1)){
+  if(beneath_target&&!target_draw&&resting_shift)export_container=MovedContainer{{r[0],r[1],r[2],r[3]},*resting_shift};
+  else if(!resting_shift&&export_container){
+   const auto&c=export_container->rect;
+   if(r[0]>=c[0]-.5f&&r[1]>=c[1]-.5f&&r[2]<=c[2]+.5f&&r[3]<=c[3]+.5f)resting_shift=export_container->shift;
+  }
+ }
+ // Glass beneath the target recomputes from the pinned Home backdrop only when
+ // its container moved since rest, as the raised tablet dock does.
+ MaterialDraw draw{r,target_draw,texture_capture,0,{},resting_shift,target_draw||(beneath_target&&resting_shift),{}};
  auto*previous=active_draw;active_draw=&draw;
+ const size_t touched=active_pin?active_pin->touched_cache_keys.size():0;
  bool ok=original_draw(canvas,filter,rect,clip,view,has_view,backdrop,has_backdrop,alpha);
  active_draw=previous;
+ // Flush the entries this draw computed while its cache is known to be alive.
+ // A layer rebuilt alone for a return can render with a cache that does not
+ // outlive the raster task.
+ if(active_pin&&active_pin->touched_cache_keys.size()>touched){
+  auto&keys=active_pin->touched_cache_keys;
+  if(cache_remove)for(size_t i=touched;i<keys.size();i++)cache_remove(keys[i].first,keys[i].second.bytes);
+  keys.resize(touched);
+ }
  if(!export_kind&&ok&&draw.resting)observe_home(context,*draw.resting,Clock::now());
  return ok;
 }
@@ -536,6 +642,43 @@ bool crop_export_image(uintptr_t peer,unsigned x,unsigned y,unsigned width,unsig
  uintptr_t previous=image;image=replacement;release_image(previous);
  return true;
 }
+// The tablet dock sits under an OverlayTrackerLayer. While the global dock
+// window covers Home, the shared LayerState hides the subtree, so a return
+// export would omit the target icon. Exports paint it; the live scene and the
+// tracker's shell callbacks keep their original behavior.
+Resolved::OverlayTrackerLayout overlay_tracker;
+using LayerPass=void(*)(uintptr_t,uintptr_t);LayerPass original_overlay_paint=nullptr,original_overlay_preroll=nullptr;
+using PrerollChildren=void(*)(uintptr_t,uintptr_t,float*);
+uint8_t*overlay_visible(uintptr_t layer){
+ uintptr_t state=*(uintptr_t*)(layer+overlay_tracker.state);
+ return state?(uint8_t*)(state+overlay_tracker.visible):nullptr;
+}
+void overlay_preroll(uintptr_t layer,uintptr_t context){
+ original_overlay_preroll(layer,context);
+ if(!export_kind)return;
+ const uint8_t*visible=overlay_visible(layer);
+ if(!visible||(*visible&1))return;
+ alignas(16) float bounds[4]{};
+ ((PrerollChildren)overlay_tracker.preroll_children)(layer,context,bounds);
+ memcpy((void*)(layer+overlay_tracker.bounds),bounds,sizeof(bounds));
+}
+void overlay_paint(uintptr_t layer,uintptr_t context){
+ uint8_t*visible=export_kind?overlay_visible(layer):nullptr;
+ if(!visible||(*visible&1)){original_overlay_paint(layer,context);return;}
+ const uint8_t saved=*visible;*visible=1;
+ original_overlay_paint(layer,context);
+ *visible=saved;
+}
+void install_overlay_tracker_hooks(const Resolved&result){
+ if(original_overlay_paint||!result.overlay_tracker.paint)return;
+ overlay_tracker=result.overlay_tracker;
+ const HookSpec specs[]={
+  {overlay_tracker.preroll,(void*)overlay_preroll,(void**)&original_overlay_preroll},
+  {overlay_tracker.paint,(void*)overlay_paint,(void**)&original_overlay_paint},
+ };
+ if(install_hook_group(specs,sizeof(specs)/sizeof(specs[0])))LOG("Overlay tracker export hooks ready: covered subtrees render into snapshots");
+ else LOG("Overlay tracker export hooks unavailable");
+}
 bool install_material_hooks(uintptr_t base,const Program&program,const Resolved&result){
  if(original_raster&&original_draw&&original_bind&&original_uniform&&original_acquire&&original_image_ready&&
     original_try_get&&original_try_get_tinted&&cache_remove)return true;
@@ -562,6 +705,7 @@ bool install_material_hooks(uintptr_t base,const Program&program,const Resolved&
  };
  bool ok=install_hook_group(specs,sizeof(specs)/sizeof(specs[0]));
  static bool reported=false;if(ok&&!reported){reported=true;LOG("Native material capture ready: independent GPU backdrop, live foreground");}
+ if(ok)install_overlay_tracker_hooks(result);
  return ok;
 }
 bool install_backdrop_stream_hooks(){

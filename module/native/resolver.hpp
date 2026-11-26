@@ -68,6 +68,12 @@ struct Resolved {
  std::array<uint32_t,2> virtual_slots{};
  // Live Dart_CreateIsolateGroup entry when the image defines it.
  uintptr_t isolate_group_entry=0;
+ // OverlayTrackerLayer, which gates its children on a shared visibility
+// state. Live entries and offsets come from the current engine's code.
+ struct OverlayTrackerLayout {
+  uintptr_t paint=0,preroll=0,preroll_children=0;
+  uint32_t state=0,visible=0,bounds=0;
+ } overlay_tracker;
  std::string diagnostic;
 };
 class Locator {

@@ -52,6 +52,15 @@ elif mode=='icon-layout':
  struct.pack_into('<I',raw,at,(word&~(4095<<10))|(0x168<<10))
 elif mode=='engine-layout':
  at=offset(0xc2fc28);w=struct.unpack_from('<I',raw,at)[0];struct.pack_into('<I',raw,at,(w&~(4095<<10))|(4<<10))
+elif mode=='maml-outlined-move':
+ # Another build numbers the outlined register save differently. Copy it
+ # over an unrelated outlined helper and retarget parse_dom's prologue call.
+ call=0x5182e8;helper=branch_target(struct.unpack('<I',image.read(call,4))[0],call)
+ assert helper==0x5e7230 and image.read(call-4,4)==bytes.fromhex('fd7bbaa9')
+ moved=0x5e6a94;assert image.owner(moved)[0]==moved and image.owner(moved)[1]>=28
+ raw[offset(moved):offset(moved)+28]=image.read(helper,28)
+ struct.pack_into('<I',raw,offset(call),0x94000000|(((moved-call)>>2)&0x3ffffff))
+ raw[offset(helper):offset(helper)+28]=b'\x1f\x20\x03\xd5'*7
 elif mode=='context-slot-shift':
  # An engine build with one more impeller::Context virtual before both
  # slots. The resolver must carry the moved slots to the GPU copy.

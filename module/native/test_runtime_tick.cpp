@@ -184,6 +184,10 @@ int main(){
  prepare_capture(registers,bx,by);assert(capture_result(registers)->placement.viewport_width==0);
  frame[1]=arena+0x601;
  prepare_capture(registers,bx,by);assert(capture_result(registers)->placement.viewport_width==0);
+ // A collection can move the layer while an app is in front. Its identity
+ // hash moves with it and still finds the mounted placement.
+ const uintptr_t moved=arena+0x11c1;frame[1]=moved;field(moved+3,uint32_t(1234));
+ prepare_capture(registers,bx,by);assert(capture_result(registers)->placement.x==10);
  frame[1]=source;field(source+3,uint32_t(1234));
  send_signal("openingRemoteAnimationClose");
  send_signal("closingRemoteAnimationClose");
@@ -288,6 +292,48 @@ int main(){
   registers[1]=layer;export_dispatch(registers);
  }
  assert(mounted_captures.size()==1&&mounted_captures.front().placement.viewport_width==1200);
+ // An app reached by quick switching has no opening capture. Its detached
+ // layer rebuilds at the resting walk's position; the frame names the view.
+ mounted_captures.clear();resting_layers.clear();
+ remember_resting_layer({registers[25],source,1234,500,600,2.85,2.85,1200,2436});
+ field(source+3,uint32_t(1234));field(source+0x1f,uint32_t(registers[21]));
+ field(bounds_obj+7,0.0);field(bounds_obj+15,0.0);field(bounds_obj+23,60.0);field(bounds_obj+31,60.0);
+ prepare_capture(registers,bx,by);
+ {const auto&pl=capture_result(registers)->placement;
+  assert(pl.view==HG_CAPTURE_VIEW_FROM_SLOT&&pl.x==500&&pl.y==600&&pl.width==60&&pl.height==60&&pl.viewport_width==1200);}
+ field(source+3,uint32_t(4321));prepare_capture(registers,bx,by);
+ assert(capture_result(registers)->placement.viewport_width==0);
+ // An attached layer gets the same placement; the adapter uses it only when
+ // the full scene cannot reach the target, such as a dock below the viewport.
+ field(source+3,uint32_t(1234));field(source+0x1f,uint32_t(layer));
+ prepare_capture(registers,bx,by);assert(capture_result(registers)->placement.view==HG_CAPTURE_VIEW_FROM_SLOT);
+ resting_layers.clear();
+ // A dock icon rebuilt while the app was in front has no mounted capture and
+ // lies below the viewport. The mounted icon at its column and size places it.
+ static HgCapturePlacement off_report{},off_seen{};static unsigned off_calls=0;
+ original_dispatch=[](uintptr_t*r){
+  auto*res=capture_result(r);off_calls++;
+  if(!res->placement.viewport_width){res->placement=off_report;res->identity=HG_CAPTURE_OFF_VIEWPORT;r[15]=0;return;}
+  off_seen=res->placement;res->view_slot=&dispatch_view_slot;r[15]=2;
+ };
+ auto off_return=[&]{off_calls=0;off_seen={};registers[15]=0;export_dispatch(registers);};
+ mounted_captures.clear();resting_layers.clear();field(source+3,uint32_t(0));
+ off_report=HgCapturePlacement{861.2,2893,2.85,2.85,132,132,0,1880,3008};
+ remember_mounted_capture({HgCapturePlacement{861.1,2779.9,2.85,2.85,132,132,0,1880,3008},registers[25],arena+0x11c1,555,0,0});
+ remember_mounted_capture({HgCapturePlacement{705.6,2779.9,2.85,2.85,132,132,0,1880,3008},registers[25],arena+0x1181,556,0,0});
+ off_return();assert(off_calls==2&&off_seen.x==861.1&&off_seen.y==2779.9);
+ // Earlier layers of the same icon leave identical placements.
+ remember_mounted_capture({HgCapturePlacement{861.1,2779.9,2.85,2.85,132,132,0,1880,3008},registers[25],arena+0x1191,557,0,0});
+ off_return();assert(off_calls==2&&off_seen.x==861.1);
+ // A layer above its mounted place, another size or another column stays stock.
+ off_report.y=2700;off_return();assert(off_calls==1);
+ off_report.y=2893;off_report.width=173;off_return();assert(off_calls==1);
+ off_report.width=132;off_report.x=1016.7;off_return();assert(off_calls==1);
+ // Distinct icons at the same column and size are ambiguous.
+ off_report.x=861.2;
+ remember_mounted_capture({HgCapturePlacement{861.1,1500,2.85,2.85,132,132,0,1880,3008},registers[25],arena+0x11a1,558,0,0});
+ off_return();assert(off_calls==1&&capture_result(registers)->placement.viewport_width==0);
+ mounted_captures.clear();field(source+3,uint32_t(1234));
  test_viewport=nullptr;original_dispatch=nullptr;test_capture_queue=false;
  puts("PASS workspace scrolling preserves resting captures, recovers scrolled openings and invalidates on viewport resize per view");
  // Each child starts with the real runtime's uncached setting. Failed reads

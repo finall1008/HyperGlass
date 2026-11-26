@@ -54,29 +54,33 @@ template<class T> T dart_value(uintptr_t address){
 HgCaptureResult* capture_result(uintptr_t*r){
  return reinterpret_cast<HgCaptureResult*>(reinterpret_cast<char*>(r)+HG_CAPTURE_RESULT_OFFSET);
 }
+// The Dart identity hash survives collections that move a layer, as one does
+// while an app stays in front. Without hashes the object address identifies it.
+bool same_layer(uintptr_t thread,uintptr_t layer,uint32_t hash,uintptr_t other_thread,uintptr_t other_layer,uint32_t other_hash){
+ return thread==other_thread&&(hash&&other_hash?hash==other_hash:layer==other_layer);
+}
 const MountedCapture* find_mounted_capture(uintptr_t thread,uintptr_t layer,uint32_t identity){
  if(!identity)return nullptr;
  for(auto it=mounted_captures.rbegin();it!=mounted_captures.rend();++it)
-  if(it->thread==thread&&it->layer==layer&&it->identity==identity)return &*it;
+  if(same_layer(it->thread,it->layer,it->identity,thread,layer,identity))return &*it;
  return nullptr;
 }
 void remember_mounted_capture(const MountedCapture&entry){
  if(!entry.identity||!entry.placement.viewport_width||!entry.placement.viewport_height)return;
  mounted_captures.erase(std::remove_if(mounted_captures.begin(),mounted_captures.end(),[&](const MountedCapture&item){
-  return item.thread==entry.thread&&item.layer==entry.layer;
+  return same_layer(item.thread,item.layer,item.identity,entry.thread,entry.layer,entry.identity);
  }),mounted_captures.end());
  if(mounted_captures.size()>=max_mounted_captures)mounted_captures.erase(mounted_captures.begin());
  mounted_captures.push_back(entry);
 }
 void remember_resting_layer(const RestingLayer&entry){
  resting_layers.erase(std::remove_if(resting_layers.begin(),resting_layers.end(),[&](const RestingLayer&item){
-  return item.thread==entry.thread&&item.layer==entry.layer;
+  return same_layer(item.thread,item.layer,item.hash,entry.thread,entry.layer,entry.hash);
  }),resting_layers.end());
  if(resting_layers.size()>=max_resting_layers)resting_layers.erase(resting_layers.begin());
  resting_layers.push_back(entry);
  for(auto&item:mounted_captures){
-  if(item.thread!=entry.thread||item.layer!=entry.layer)continue;
-  if(entry.hash&&item.identity!=entry.hash)continue;
+  if(!same_layer(item.thread,item.layer,item.identity,entry.thread,entry.layer,entry.hash))continue;
   if(item.placement.viewport_width!=entry.viewport_width||item.placement.viewport_height!=entry.viewport_height)continue;
   if(std::abs(item.placement.scale_x-entry.scale_x)>=0.001||std::abs(item.placement.scale_y-entry.scale_y)>=0.001)continue;
   double rx=entry.x+entry.scale_x*item.bounds_x,ry=entry.y+entry.scale_y*item.bounds_y;
@@ -91,8 +95,7 @@ std::optional<HgCapturePlacement> recover_resting_placement(
   uintptr_t thread,uintptr_t layer,uint32_t identity,const HgCapturePlacement&current,double bounds_x,double bounds_y){
  for(auto it=resting_layers.rbegin();it!=resting_layers.rend();++it){
   const auto&e=*it;
-  if(e.thread!=thread||e.layer!=layer)continue;
-  if(e.hash&&e.hash!=identity)continue;
+  if(!same_layer(e.thread,e.layer,e.hash,thread,layer,identity))continue;
   if(e.viewport_width!=current.viewport_width||e.viewport_height!=current.viewport_height)continue;
   if(std::abs(e.scale_x-current.scale_x)>=0.001||std::abs(e.scale_y-current.scale_y)>=0.001)continue;
   double rx=e.x+e.scale_x*bounds_x,ry=e.y+e.scale_y*bounds_y;
@@ -115,10 +118,47 @@ void prepare_capture(uintptr_t*r,double&bounds_x,double&bounds_y){
  }
  const auto source=dart_value<uintptr_t>(r[28]-8);
  if(!(source&1)||source==r[21])return;
- // The Dart hash is stable across collections. Also compare the current
- // object address, so a moved or unrelated object simply takes stock capture.
- if(const auto*found=find_mounted_capture(r[25],source,dart_value<uint32_t>(source+3)))
-  result->placement=found->placement;
+ // An unrelated object has another identity hash and takes stock capture.
+ const uint32_t identity=dart_value<uint32_t>(source+3);
+ if(const auto*found=find_mounted_capture(r[25],source,identity)){result->placement=found->placement;return;}
+ // Without an opening capture, a layer rebuilds at the position the resting
+ // walk recorded: one the Hero placeholder detached, such as the icon of an
+ // app reached by quick switching, or one whose container left the viewport,
+ // such as the tablet dock during a fast gesture. The frame supplies its view.
+ if(!(bounds&1)||bounds==r[21]||!identity)return;
+ const double width=dart_value<double>(bounds+23)-bounds_x,height=dart_value<double>(bounds+31)-bounds_y;
+ if(!(width>0&&height>0))return;
+ for(auto it=resting_layers.rbegin();it!=resting_layers.rend();++it){
+  const auto&e=*it;
+  if(!e.hash||!same_layer(e.thread,e.layer,e.hash,r[25],source,identity))continue;
+  const double x=e.x+e.scale_x*bounds_x,y=e.y+e.scale_y*bounds_y;
+  if(x<-0.5||y<-0.5||x+width*e.scale_x>e.viewport_width+0.5||y+height*e.scale_y>e.viewport_height+0.5)return;
+  result->placement=HgCapturePlacement{x,y,e.scale_x,e.scale_y,width,height,HG_CAPTURE_VIEW_FROM_SLOT,
+                                       e.viewport_width,e.viewport_height};
+  return;
+ }
+}
+// The adapter reports a layer outside the viewport that no mounted capture
+// identifies, such as a dock icon rebuilt during quick switching while the
+// dock slid below the screen. The mounted icon at the same column and size is
+// the one it replaced. Distinct candidates leave the stock capture.
+bool place_off_viewport(uintptr_t*r){
+ auto*result=capture_result(r);
+ if(result->identity!=HG_CAPTURE_OFF_VIEWPORT)return false;
+ const HgCapturePlacement off=result->placement;
+ *result={};
+ const MountedCapture*match=nullptr;
+ for(const auto&item:mounted_captures){
+  const auto&p=item.placement;
+  if(item.thread!=r[25]||p.viewport_width!=off.viewport_width||p.viewport_height!=off.viewport_height)continue;
+  if(std::abs(p.scale_x-off.scale_x)>=0.001||std::abs(p.scale_y-off.scale_y)>=0.001)continue;
+  if(std::abs(p.width-off.width)>=0.5||std::abs(p.height-off.height)>=0.5||std::abs(p.x-off.x)>=1||off.y<=p.y+1)continue;
+  if(match&&(std::abs(match->placement.x-p.x)>=0.5||std::abs(match->placement.y-p.y)>=0.5))return false;
+  match=&item;
+ }
+ if(!match)return false;
+ result->placement=match->placement;
+ return true;
 }
 void select_maml_repaint_key(uintptr_t*registers);
 void observe_viewport_density(const uintptr_t*registers);
@@ -144,6 +184,7 @@ void export_dispatch(uintptr_t*r){
  double bounds_x=0,bounds_y=0;
  if(mode==0)prepare_capture(r,bounds_x,bounds_y);
  original_dispatch(r);
+ if(mode==0&&!r[15]&&place_off_viewport(r))original_dispatch(r);
  // The Dart adapter reports the stage through the saved scratch register
  // after marking the view ID in its current frame slot.
  if(mode==0&&r[15]){uintptr_t fp=r[28],bounds=*(uintptr_t*)(fp-16);const double*rect=(const double*)(bounds+7);
@@ -205,20 +246,28 @@ std::array<ImageState,3> images;
 // The engine maps libapp and then creates the root isolate group. Dart code
 // that runs before the libapp batch lands builds state the adapters never see,
 // such as the tablet dock's icons. Isolate creation waits for that batch.
-std::atomic<bool> app_mapped{false},app_settled{false};
+std::atomic<bool> app_settled{false};
 using CreateGroup=uintptr_t(*)(uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t);
 CreateGroup original_create_group=nullptr;
+// The snapshot instructions argument points into the mapped AOT library.
+// Only a launcher snapshot the worker can adapt is worth waiting for.
+bool adaptable_snapshot(uintptr_t instructions){
+ FILE*f=fopen("/proc/self/maps","re");if(!f)return false;
+ char line[1536],path[1024];unsigned long begin,end;bool found=false;
+ while(fgets(line,sizeof(line),f))if(sscanf(line,"%lx-%lx %*s %*s %*s %*s %1023s",&begin,&end,path)==3&&begin<=instructions&&instructions<end){
+  size_t n=strlen(path);
+  found=(n>4&&!strcmp(path+n-4,".apk"))||(n>=10&&!strcmp(path+n-10,"/libapp.so"));break;
+ }
+ fclose(f);return found;
+}
 uintptr_t create_group_gate(uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d,uintptr_t e,uintptr_t f,uintptr_t g,uintptr_t h){
  using namespace std::chrono;
  const auto start=steady_clock::now();
- while(!app_settled.load(std::memory_order_acquire)){
-  const auto waited=steady_clock::now()-start;
-  // The snapshot arguments already point into libapp. A mapping the worker
-  // still has not recognized after its polling interval will not settle.
-  if((!app_mapped.load(std::memory_order_acquire)&&waited>=milliseconds(300))||waited>=milliseconds(2000)){
-   LOG("Dart startup gate released before libapp adapters settled (mapped=%d)",app_mapped.load()?1:0);break;
+ if(!app_settled.load(std::memory_order_acquire)&&d&&adaptable_snapshot(d)){
+  while(!app_settled.load(std::memory_order_acquire)){
+   if(steady_clock::now()-start>=milliseconds(2000)){LOG("Dart startup gate released before libapp adapters settled");break;}
+   usleep(2000);
   }
-  usleep(2000);
  }
  static std::atomic<bool> reported{false};
  if(!reported.exchange(true))LOG("Dart startup gate waited %lld ms",(long long)duration_cast<milliseconds>(steady_clock::now()-start).count());
@@ -516,7 +565,7 @@ void find_images(){
    if(item==layouts.end()){Layout layout;std::string error;layout.valid=hg::image_layout(path.c_str(),layout.segments,layout.offset,error);item=layouts.emplace(path,std::move(layout)).first;}
    const auto&layout=item->second;
    if(!layout.valid||m.offset!=layout.offset||!executable_mapping(m.begin,m.path,layout,maps))continue;
-   images[i].base=m.begin;images[i].path=path;if(i==0)app_mapped.store(true,std::memory_order_release);break;
+   images[i].base=m.begin;images[i].path=path;break;
   }
  }
 }

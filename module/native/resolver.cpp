@@ -947,9 +947,48 @@ static bool plan_icon_retake(const ElfImage&image,uintptr_t live,uintptr_t adapt
  return true;
 }
 
+// OverlayTrackerLayer::Paint paints its children only while the shared
+// LayerState marks them visible; Preroll gates PrerollChildren the same way
+// and stores the result as the layer's paint bounds.
+static bool locate_overlay_tracker(const ElfImage&image,uintptr_t live,Resolved::OverlayTrackerLayout&out){
+ auto unique=[&](const char*name)->uint64_t{auto s=image.named(name);return s.size()==1&&image.executable(s.front().value,8)?s.front().value:0;};
+ const uint64_t paint=unique("_ZNK7flutter19OverlayTrackerLayer5PaintERNS_12PaintContextE");
+ const uint64_t preroll=unique("_ZN7flutter19OverlayTrackerLayer7PrerollEPNS_14PrerollContextE");
+ const uint64_t children=unique("_ZN7flutter14ContainerLayer15PrerollChildrenEPNS_14PrerollContextEPN8impeller5TRectIfEE");
+ if(!paint||!preroll||!children||!image.executable(paint,32))return false;
+ const uint32_t state=image.word(paint),visible=image.word(paint+4);
+ if((state&0xffc003ff)!=0xf9400008||(visible&0xffc003ff)!=0x39400108||image.word(paint+8)!=0x7100051f||
+    (image.word(paint+12)&0xff00001f)!=0x54000001||image.word(paint+16)!=0xf9400008||
+    (image.word(paint+20)&0xffc003ff)!=0xf9400102||image.word(paint+24)!=0xd61f0040||image.word(paint+28)!=0xd65f03c0)return false;
+ const uint32_t state_offset=((state>>10)&0xfff)*8,visible_offset=(visible>>10)&0xfff;
+ // The single call to PrerollChildren follows the same visibility test.
+ auto size=image.named("_ZN7flutter19OverlayTrackerLayer7PrerollEPNS_14PrerollContextE").front().size;
+ uint64_t call=0;
+ for(uint64_t pc=preroll;pc+4<=preroll+size;pc+=4){
+  uint32_t w=image.word(pc);
+  if((w&0xfc000000)!=0x94000000||branch_target(w,pc)!=children)continue;
+  if(call)return false;call=pc;
+ }
+ if(!call||call<preroll+28||!image.executable(call,16))return false;
+ if(image.word(call-28)!=(0xf9400268|((state_offset/8)<<10))||image.word(call-24)!=(0x39400108|(visible_offset<<10))||
+    (image.word(call-20)&0xfff8001f)!=0x36000008||image.word(call-12)!=0xaa1303e0||image.word(call-8)!=0xaa1403e1)return false;
+ const uint64_t join=image.word(call+8);
+ if((join&0xfc000000)!=0x14000000)return false;
+ const uint64_t store_pc=branch_target(uint32_t(join),call+8);
+ const uint32_t store=image.word(store_pc);
+ // STUR Q0,[X19,#imm]: the paint bounds the parent uses to cull children.
+ if((store&0xffe00fff)!=0x3c800260)return false;
+ int32_t bounds=int32_t((store>>12)&0x1ff);if(bounds&0x100)bounds-=0x200;
+ if(bounds<=0)return false;
+ out={live+uintptr_t(paint),live+uintptr_t(preroll),live+uintptr_t(children),state_offset,visible_offset,uint32_t(bounds)};
+ return true;
+}
 bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolved&out,bool allocate){
  ElfImage image;std::string error;if(!image.load(path,error)){out.diagnostic=error;return false;}
  {auto entry=image.named("Dart_CreateIsolateGroup");if(entry.size()==1&&image.executable(entry.front().value,16))out.isolate_group_entry=live+uintptr_t(entry.front().value);}
+ if(!image.named("_ZNK7flutter19OverlayTrackerLayer5PaintERNS_12PaintContextE").empty()&&!locate_overlay_tracker(image,live,out.overlay_tracker)){
+  out.overlay_tracker={};out.diagnostic+="OverlayTrackerLayer export ABI unresolved; ";
+ }
  SceneFrame scene;
  const char*scene_failure=program.config_count?locate_scene_frame(image,scene):nullptr;
  if(scene_failure)scene=SceneFrame{};

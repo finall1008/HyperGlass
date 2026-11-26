@@ -124,6 +124,25 @@ if 'capture_layer_identity' in symbols:
   else:
    assert qi(u,0x2faf68)==nil
  print('PASS: detached live boundary uses matching mounted placement and resting export')
+ # A container below the viewport renders the layer alone at its mounted
+ # place. Without one, the adapter reports where the layer is and keeps the
+ # stock scene, so the runtime can find the icon it replaced.
+ result=0x2f0000-112
+ for placed in (True,False):
+  u,put=setup();child,root,data,bounds=scene(u,fh=900);before=bytes(u.mem_read(bounds+7,32))
+  if placed:u.mem_write(result+32,struct.pack('<6dQ2I',69.1,802.2,2.85,2.85,60,60,0,1120,2436))
+  execute(u,'root_gateway',0x9e2744)
+  assert qi(u,0x2f9ff8)==child
+  if placed:
+   assert qi(u,0x2faf68)==2<<29
+   assert int(struct.unpack('<d',u.mem_read(bounds+7,8))[0])-1048576==69
+  else:
+   assert qi(u,0x2faf68)==0 and bytes(u.mem_read(bounds+7,32))==before
+   x,y,sx,sy,width,height,view,vw,vh=struct.unpack('<6dQ2I',u.mem_read(result+32,64))
+   assert wi(u,result+104)==0xffffffff and qi(u,result+96)==child
+   assert abs(x-2.85*24.2105263158)<1e-6 and abs(y-2.85*281.4210526316)<1e-6
+   assert (sx,sy,width,height,vw,vh)==(2.85,2.85,60,60,1120,900)
+ print('PASS: a layer below the viewport renders at its mounted place or reports its position')
 # Execute the real wrapper through both existing allocation return PCs.
 for show in [False,True]:
  u,put=setup();put(0x15f14f0,original(0x15f14f0,48))

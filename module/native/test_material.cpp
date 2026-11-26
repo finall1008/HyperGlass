@@ -156,8 +156,11 @@ static void check_cache_draw(bool target_rect){
  cache_entries.at({101,21})=texture.object;
  cache_entries.at({102,21})=texture.object;
 }
+// Blur passes the return recomputes before the composite bind their own slot.
+static unsigned blur_binds=0;static uint32_t seen_blur=0;
 static bool texture_bind(uintptr_t pass,uint32_t stage,uint32_t type,const void*slot,const void*metadata,hg::NativeRef*texture,uintptr_t sampler){
- assert(pass==11&&stage==2&&type==3&&slot==(void*)12&&metadata==(void*)13&&sampler==14);seen_texture=texture->object?resource(*texture).color:0;hg::released(*texture);*texture={};return true;
+ assert(pass==11&&stage==2&&type==3&&(slot==(void*)12||slot==(void*)15)&&metadata==(void*)13&&sampler==14);
+ (slot==(void*)12?seen_texture:seen_blur)=texture->object?resource(*texture).color:0;hg::released(*texture);*texture={};return true;
 }
 static bool draw_uniforms=false,host_copy_failure=false;static uint64_t uniform_binding=0;
 static unsigned uniform_writes=0;
@@ -172,7 +175,10 @@ static bool uniform(uintptr_t pass,uint64_t binding,uint32_t type,void*view){
 }
 static bool draw(uintptr_t c,const void*,const void*,const void*clip,uint64_t view,uint64_t has_view,uint64_t backdrop,uint64_t has_backdrop,float alpha){
  assert(c==(uintptr_t)canvas&&clip==(void*)9&&view==55&&has_view==1&&backdrop==draw_backdrop&&has_backdrop==1&&alpha==1);
- if(draw_textures){auto texture=hg::retained(texture_input);if(!hg::material_bind(11,2,3,(void*)12,(void*)13,&texture,14))return false;assert(!texture.object);}
+ if(draw_textures){
+  for(unsigned i=0;i<blur_binds;i++){auto blur=hg::retained(texture_input);if(!hg::material_bind(11,2,3,(void*)15,(void*)13,&blur,14))return false;assert(!blur.object);}
+  auto texture=hg::retained(texture_input);if(!hg::material_bind(11,2,3,(void*)12,(void*)13,&texture,14))return false;assert(!texture.object);
+ }
  return !draw_uniforms||hg::material_uniform(11,uniform_binding,6,uniform_view);
 }
 int main(){
@@ -334,6 +340,22 @@ int main(){
  export_frame(2,869,1656);assert(seen_texture==17&&hg::opening_inputs.size()==1);
  export_frame(2,869,1656);assert(seen_texture==91);
  export_frame(1,869,1656);assert(hg::opening_inputs.size()==2);
+ // The tablet dock raises its icons while an app is in front. The return
+ // draw keeps its backdrop ID and size at the raised position, and samples
+ // the saved backdrop at its opening origin.
+ const float opening[16]={2.85f,0,0,0,0,2.85f,0,0,0,0,1,0,rect[0],rect[1],0,1};
+ draw_uniforms=true;matrix(opening);export_frame(1,869,1656);assert(hg::opening_inputs.size()==2);
+ rect[1]-=55;rect[3]-=55;resource(texture_input).color=93;
+ float raised[16];memcpy(raised,opening,sizeof(raised));raised[13]=rect[1];
+ matrix(raised);export_frame(2,869,1601);assert(seen_texture==91&&hg::opening_inputs.size()==1);compare(opening);
+ matrix(raised);export_frame(2,869,1601);assert(seen_texture==93);compare(opening);
+ rect[1]+=55;rect[3]+=55;draw_uniforms=false;
+ // The pinned return recomputes the target's blur before its composite. The
+ // saved composite inputs pair with the composite slot, not the bind order.
+ resource(texture_input).color=94;export_frame(1,869,1656);assert(hg::opening_inputs.size()==2);
+ resource(texture_input).color=95;blur_binds=2;
+ export_frame(2,869,1656);assert(seen_texture==94&&seen_blur==95&&hg::opening_inputs.size()==1);
+ blur_binds=0;
  *(uintptr_t*)(state+0x18)=36;observe(true,450);observe(true,500);
  resource(texture_input).color=92;
  export_frame(2,869,1656);assert(seen_texture==92);
@@ -358,6 +380,19 @@ int main(){
  hg::set_home_material_ready(true);observe(true,7300);assert(home.generation==39);
  observe(true,7350);assert(home.generation==40);
  puts("PASS workspace motion preserves the resting texture and scroll end cannot reopen an app scene");
+ // A return export leaves out only full-screen glass that resting Home never
+ // drew. A rebuilt icon with an unrecorded backdrop ID still renders.
+ {
+  static unsigned plain_draws=0;auto saved_draw=hg::original_draw;
+  hg::resting_backdrops[(uintptr_t)fake_context][7]={869,1656,1040,1827};
+  hg::original_draw=+[](uintptr_t,const void*,const void*,const void*,uint64_t,uint64_t,uint64_t,uint64_t,float){plain_draws++;return true;};
+  hg::export_kind=2;hg::export_width=1120;hg::export_height=2436;
+  const float icon[]={606,1371,777,1542},screen[]={0,0,1120,2436};
+  assert(hg::material_draw((uintptr_t)canvas,nullptr,icon,nullptr,0,0,99,1,1)&&plain_draws==1);
+  assert(hg::material_draw((uintptr_t)canvas,nullptr,screen,nullptr,0,0,98,1,1)&&plain_draws==1);
+  hg::export_kind=0;hg::export_width=hg::export_height=0;hg::original_draw=saved_draw;hg::resting_backdrops.clear();
+ }
+ puts("PASS return exports skip only unrecorded full-screen glass");
  hg::released(texture_input);
  hg::opening_inputs.clear();
  hg::released(hg::export_context);hg::export_context={};
