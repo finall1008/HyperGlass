@@ -201,13 +201,15 @@ void material_raster(uintptr_t closure){
  export_kind=previous_kind;export_target=previous_target;export_inputs=previous_inputs;export_home=previous_home;
 }
 using CreateTexture=void(*)(NativeRef*,uintptr_t,const void*,bool);CreateTexture create_texture=nullptr;
+// impeller::Context allocator and command-buffer slots from the current engine.
+uint32_t allocator_slot=0,command_slot=0;
 using CreateBlit=void(*)(NativeRef*,uintptr_t);CreateBlit create_blit=nullptr;
 using AddCopy=bool(*)(uintptr_t,NativeRef*,NativeRef*,const void*,int64_t,int64_t,const char*,size_t,uint32_t);AddCopy add_copy=nullptr;
 using Enqueue=bool(*)(uintptr_t,NativeRef*);Enqueue enqueue=nullptr;
 NativeRef clone_texture(uintptr_t context,NativeRef source,const int64_t*crop=nullptr){
  NativeRef copy{};if(!source.object||!create_texture||!create_blit||!add_copy||!enqueue)return copy;
  auto table=*(uintptr_t**)context;using Maker=ReturnRef(*)(uintptr_t);
- ReturnRef allocator=((Maker)table[0xb8/8])(context),command=((Maker)table[0xe0/8])(context);
+ ReturnRef allocator=((Maker)table[allocator_slot/8])(context),command=((Maker)table[command_slot/8])(context);
  if(!allocator.value.object||!command.value.object)return copy;
  alignas(8) uint8_t descriptor[48];memcpy(descriptor,(void*)(source.object+16),sizeof(descriptor));
  if(crop){int64_t size[]={crop[2]-crop[0],crop[3]-crop[1]};memcpy(descriptor+16,size,sizeof(size));}
@@ -542,11 +544,12 @@ bool install_material_hooks(uintptr_t base,const Program&program,const Resolved&
  create_blit=(CreateBlit)entry(program,result,base,".material-create-blit");
  add_copy=(AddCopy)entry(program,result,base,".material-add-copy");
  enqueue=(Enqueue)entry(program,result,base,".material-enqueue");
+ allocator_slot=result.virtual_slots[0];command_slot=result.virtual_slots[1];
  original_make_image=(MakeImage)entry(program,result,base,".material-make-image");
  buffer_contents=(BufferContents)entry(program,result,base,".material-buffer-contents");
  copy_host=(CopyHost)entry(program,result,base,".material-copy-host");
  cache_remove=(CacheRemove)entry(program,result,base,".material-cache-remove");
- if(!create_texture||!create_blit||!add_copy||!enqueue||!original_make_image||!buffer_contents||!copy_host||!cache_remove)return false;
+ if(!create_texture||!create_blit||!add_copy||!enqueue||!allocator_slot||!command_slot||!original_make_image||!buffer_contents||!copy_host||!cache_remove)return false;
  const HookSpec specs[]={
   {entry(program,result,base,".material-raster"),(void*)material_raster,(void**)&original_raster},
   {entry(program,result,base,".material-draw"),(void*)material_draw,(void**)&original_draw},

@@ -23,7 +23,7 @@ int main(int argc,char**argv){
    if(u.guard>=0&&(result.addresses[size_t(u.guard)]!=0)!=u.when_guard_matches)continue;
    fprintf(f,"%s[%u,%llu,\"",first?"":",",u.source,(unsigned long long)(hg::adapter_address(result,u.source)));hex(f,reinterpret_cast<const uint8_t*>(hg::adapter_address(result,u.source)),u.size);fprintf(f,"\",%u]",u.group);first=false;
   }
-  fprintf(f,"],\"adapted_widget_paths\":%u}\n",result.adapted_widget_paths);fclose(f);
+  fprintf(f,"],\"adapted_widget_paths\":%u,\"virtual_slots\":[%u,%u]}\n",result.adapted_widget_paths,result.virtual_slots[0],result.virtual_slots[1]);fclose(f);
  }
  uint32_t expected=getenv("HG_EXPECT_READY")?uint32_t(strtoul(getenv("HG_EXPECT_READY"),nullptr,10)):(index==0?(39|HG_WIDGET_MONOCHROME):index==1?2:8);return (ok||expected==0)&&result.ready==expected?0:1;
 }

@@ -337,9 +337,13 @@ def catalogs():
   e.constraints.append((2,e.model.add(pc,frames=False),-1,value))
  # Native object and virtual-call ABI used by the GPU copy. A changed ABI
  # removes the complete snapshot feature before its marker can reach a queue.
- for pc in [0xeaf184,0xeaf2dc,0xc39d4c,0xc39db4,0xc2fc28,0xc2fb68,0xc2fc54,0xc39724,0xc39740,0xc39750,0xc39768,0xc53f20,0x6d4d18,0xb44858,0xb44010,0xb44028,0xb4d8d0,0xc3992c]:
+ for pc in [0xeaf184,0xeaf2dc,0xc39d4c,0xc39db4,0xc2fc28,0xc2fb68,0xc2fc54,0xc39724,0xc39740,0xc39750,0xc39768,0xb44858,0xb44010,0xb44028,0xb4d8d0,0xc3992c]:
   value=immediate(struct.unpack('<I',e.model.image.read(pc,4))[0])
   e.constraints.append((2,e.model.add(pc,frames=False),-1,value))
+ # Context::GetResourceAllocator and CreateCommandBuffer vtable loads. Engine
+ # builds may insert virtual methods; the GPU copy uses the decoded slots.
+ for index,pc in enumerate((0xc53f20,0x6d4d18)):
+  e.constraints.append((2,e.model.add(pc,frames=False),-1,index,'hg::ConstraintKind::VirtualSlot'))
  for pc in [0xeaf1a4,0xe81f34,0xc5e134,0xc5e10c,0xc5dde0,0xe9dbd8,0xe9dbf4,0xb44038]:
   value=immediate(struct.unpack('<I',e.model.image.read(pc,4))[0]);e.constraints.append((2,e.model.add(pc,frames=False),-1,value))
  a.constraints.append((2,a.model.add(0x1a27cac,frames=False),-1,7))

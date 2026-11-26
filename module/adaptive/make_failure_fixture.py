@@ -1,5 +1,5 @@
 import os
-"""Build incompatible or ambiguous ELF fixtures to verify feature isolation."""
+"""Build incompatible, ambiguous or migratable ELF fixtures to verify feature isolation."""
 from pathlib import Path
 import lzma,struct,sys
 from inspect_pair import Image
@@ -52,6 +52,13 @@ elif mode=='icon-layout':
  struct.pack_into('<I',raw,at,(word&~(4095<<10))|(0x168<<10))
 elif mode=='engine-layout':
  at=offset(0xc2fc28);w=struct.unpack_from('<I',raw,at)[0];struct.pack_into('<I',raw,at,(w&~(4095<<10))|(4<<10))
+elif mode=='context-slot-shift':
+ # An engine build with one more impeller::Context virtual before both
+ # slots. The resolver must carry the moved slots to the GPU copy.
+ for pc in (0xc53f20,0x6d4d18):
+  at=offset(pc);word=struct.unpack_from('<I',raw,at)[0]
+  assert word&0xffc003ff==0xf9400109
+  struct.pack_into('<I',raw,at,word+(1<<10))
 elif mode=='frame-info-layout':
  at=offset(0xd5dca0);word=struct.unpack_from('<I',raw,at)[0]
  assert immediate(word)==192

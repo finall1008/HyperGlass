@@ -967,6 +967,14 @@ bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolv
  }
  for(size_t i=0;i<program.constraint_count;i++){
   const auto&c=program.constraints[i];uint32_t left=out.addresses[size_t(c.left)];bool valid=false;
+  if(c.kind==ConstraintKind::VirtualSlot){
+   // The anchor recipe fixes LDR Xt,[Xn,#imm]; only the slot may move.
+   bool decoded=false;int64_t value=left?instruction_immediate(image.word(left),&decoded):0;
+   valid=decoded&&(image.word(left)&0xffc00000)==0xf9400000&&value>0&&size_t(c.delta)<out.virtual_slots.size();
+   if(valid)out.virtual_slots[size_t(c.delta)]=uint32_t(value);
+   else {ready&=~c.group;out.diagnostic+="engine virtual-call slot unresolved; ";}
+   continue;
+  }
   if(c.right<0){bool decoded=false;int64_t value=instruction_immediate(image.word(left),&decoded);valid=left&&decoded&&(c.kind==ConstraintKind::Minimum?value>=c.delta:value==c.delta);}
   else {uint32_t right=out.addresses[size_t(c.right)];valid=left&&right&&int64_t(left)-int64_t(right)==c.delta;}
   if(!valid){ready&=~c.group;out.diagnostic+=c.kind==ConstraintKind::Minimum?"Dart frame is smaller than the adapter ABI requires; ":c.right<0?"Dart object/frame layout constraint failed; ":"Dart allocation return-PC constraint failed; ";}

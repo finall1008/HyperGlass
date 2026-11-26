@@ -23,6 +23,9 @@ APP_FAILURES = {
     'widget-layout': 4 | 16 | 64 | 128, 'ambiguous': 2, 'badge-layout': 32, 'icon-layout': 1,
 }
 ENGINE_FAILURES = ('engine-layout', 'frame-info-layout', 'glass-cache-layout')
+# Engine fixture mode -> impeller::Context slots the resolver must decode.
+ENGINE_MIGRATIONS = {'context-slot-shift': [0xc0, 0xe8]}
+ENGINE_SLOTS = [0xb8, 0xe0]
 COMPATIBILITY = [
     ('9239', REFS / 'launcher-801029239/MiuiHome.apk', APK_LIB),
     ('9226', REFS / 'launcher-801029226/MiuiHome.apk', APK_LIB),
@@ -40,12 +43,13 @@ def required_cases(out):
     run(sys.executable, H / 'adaptive/make_future_fixture.py', app, out / 'future.so')
     for mode in APP_FAILURES:
         run(sys.executable, H / 'adaptive/make_failure_fixture.py', app, mode, out / (mode + '.so'))
-    for mode in ENGINE_FAILURES:
+    for mode in (*ENGINE_FAILURES, *ENGINE_MIGRATIONS):
         run(sys.executable, H / 'adaptive/make_failure_fixture.py', ENGINE, mode, out / (mode + '.so'))
     cases = [('reference', app, 0, FULL, ''), ('reference-apk', REFERENCE / 'MiuiHome.apk', 0, FULL, APK_LIB),
              ('engine', ENGINE, 1, 2, ''), ('maml', MAML, 2, 8, ''), ('future', out / 'future.so', 0, FULL, '')]
     cases += [(mode, out / (mode + '.so'), 0, FULL & ~groups, '') for mode, groups in APP_FAILURES.items()]
     cases += [(mode, out / (mode + '.so'), 1, 0, '') for mode in ENGINE_FAILURES]
+    cases += [(mode, out / (mode + '.so'), 1, 2, '') for mode in ENGINE_MIGRATIONS]
     return cases
 
 
@@ -54,6 +58,10 @@ def check_plan(name, plan):
         assert all(not (group & APP_FAILURES[name]) for _, _, group in plan['patches']), name
     if name in ENGINE_FAILURES:
         assert plan['patches'] == [], name
+    if name == 'engine':
+        assert plan['virtual_slots'] == ENGINE_SLOTS, name
+    if name in ENGINE_MIGRATIONS:
+        assert plan['virtual_slots'] == ENGINE_MIGRATIONS[name], name
 
 
 def report_compatibility(resolve):

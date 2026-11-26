@@ -27,7 +27,8 @@ struct Unit {
  int32_t guard=-1;bool when_guard_matches=true;
 };
 struct Config { uint8_t slot,kind;int16_t subtract_slot;int32_t anchor;uint32_t source_tag; };
-enum class ConstraintKind : uint8_t { Equal, Minimum };
+// VirtualSlot decodes a validated vtable load; delta selects Resolved::virtual_slots.
+enum class ConstraintKind : uint8_t { Equal, Minimum, VirtualSlot };
 struct Constraint { uint32_t group;int32_t left,right;int32_t delta;ConstraintKind kind=ConstraintKind::Equal; };
 struct WidgetWrap {
  size_t unit;
@@ -63,6 +64,8 @@ struct Resolved {
  std::vector<std::pair<uint32_t,uintptr_t>> adapter_pages;
  MamlRepaintLayout maml_repaint;
  IconRetakeLayout icon_retake;
+ // Engine vtable byte offsets read from the running ELF's call sites.
+ std::array<uint32_t,2> virtual_slots{};
  std::string diagnostic;
 };
 class Locator {

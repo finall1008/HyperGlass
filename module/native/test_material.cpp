@@ -177,7 +177,7 @@ static bool draw(uintptr_t c,const void*,const void*,const void*clip,uint64_t vi
 }
 int main(){
  control_table[2]=(uintptr_t)destroy_resource;control_table[4]=(uintptr_t)free_control;
- allocator_ref=make_resource("allocator");context_table[0xb8/8]=(uintptr_t)allocator_maker;context_table[0xe0/8]=(uintptr_t)command_maker;
+ allocator_ref=make_resource("allocator");hg::allocator_slot=0xc0;hg::command_slot=0xe8;context_table[0xc0/8]=(uintptr_t)allocator_maker;context_table[0xe8/8]=(uintptr_t)command_maker;
  blit_table[0x18/8]=(uintptr_t)shader_read;blit_table[0x28/8]=(uintptr_t)encode;
  hg::create_texture=texture_maker;hg::create_blit=blit_maker;hg::add_copy=add_copy;hg::enqueue=enqueue;
  hg::original_acquire=acquire;hg::original_raster=raster;

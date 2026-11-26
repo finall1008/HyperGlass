@@ -6,7 +6,7 @@ HyperOS 系统桌面的 LSPosed 模块，提供单色玻璃图标、文件夹、
 
 ## 安装
 
-1. 从本仓库 Release 下载 `HyperGlass-LSPosed-1.0.12.apk` 并覆盖安装。
+1. 从本仓库 Release 下载 `HyperGlass-LSPosed-1.0.13.apk` 并覆盖安装。
 2. 在支持 HyperOS Runtime 注入的 LSPosed / Vector 中启用模块，作用域选择系统桌面。
 3. 打开模块设置页，按需隐藏桌面图标或关闭小组件单色；隐藏后从 LSPosed / Vector 的模块页面重新打开设置页，小组件单色和通知角标白底黑字开关修改后重新加载桌面生效。
    通知角标白底黑字默认关闭，开启后数字角标和圆点使用白底，数字为黑色；关闭后恢复系统配色。
