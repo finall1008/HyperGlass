@@ -949,6 +949,7 @@ static bool plan_icon_retake(const ElfImage&image,uintptr_t live,uintptr_t adapt
 
 bool resolve_program(const char*path,uintptr_t live,const Program&program,Resolved&out,bool allocate){
  ElfImage image;std::string error;if(!image.load(path,error)){out.diagnostic=error;return false;}
+ {auto entry=image.named("Dart_CreateIsolateGroup");if(entry.size()==1&&image.executable(entry.front().value,16))out.isolate_group_entry=live+uintptr_t(entry.front().value);}
  SceneFrame scene;
  const char*scene_failure=program.config_count?locate_scene_frame(image,scene):nullptr;
  if(scene_failure)scene=SceneFrame{};

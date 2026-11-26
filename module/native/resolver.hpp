@@ -66,6 +66,8 @@ struct Resolved {
  IconRetakeLayout icon_retake;
  // Engine vtable byte offsets read from the running ELF's call sites.
  std::array<uint32_t,2> virtual_slots{};
+ // Live Dart_CreateIsolateGroup entry when the image defines it.
+ uintptr_t isolate_group_entry=0;
  std::string diagnostic;
 };
 class Locator {

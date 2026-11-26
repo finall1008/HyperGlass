@@ -51,7 +51,8 @@ void test_icon_global_key(){
  const uintptr_t nil=arena,sentinel=arena+0x20,key=arena+0x40,root=arena+0x60,
                  icon=arena+0x80,copy=arena+0xa0,detached=arena+0xc0,holder=arena+0xe0,
                  element=arena+0x100,icon_widget=arena+0x120,boundary_widget=arena+0x140,
-                 controller=arena+0x160,owner=arena+0x180,registry=arena+0x1a0,entries=arena+0x1c0;
+                 controller=arena+0x160,owner=arena+0x180,registry=arena+0x1a0,entries=arena+0x1c0,
+                 dock=arena+0x1e0,dock_widget=arena+0x200;
  auto field=[](uintptr_t address,uintptr_t value){
   uint32_t compressed=uint32_t(value);memcpy((void*)address,&compressed,sizeof(compressed));
  };
@@ -61,11 +62,14 @@ void test_icon_global_key(){
  auto&element_map=result.maml_repaint.element_map;element_map=0x1f;
  uintptr_t dispatch[8]{},pool[]={0,sentinel},frame[]={boundary_widget,0,0},registers[31]{};
  dispatch[abi.build_selector+3]=abi.icon_build;
- for(auto node:{root,icon,copy,detached,holder,element})field(node+abi.widget,nil);
+ for(auto node:{root,icon,copy,detached,holder,element,dock})field(node+abi.widget,nil);
  field(root+abi.parent,nil);field(detached+abi.parent,nil);
  field(icon+abi.parent,root);field(copy+abi.parent,root);
  field(icon+abi.widget,icon_widget);field(icon_widget-1,3<<12);
  field(icon_widget+abi.controller,controller);field(controller+abi.capture_key,key);
+ // A second attached icon, such as the tablet dock, with the same controller.
+ field(dock+abi.parent,root);field(dock+abi.widget,dock_widget);field(dock_widget-1,3<<12);
+ field(dock_widget+abi.controller,controller);
  field(sentinel+abi.capture_key,key); // A matching word must not make the sentinel a controller.
  field(boundary_widget+abi.key,key);field(element+abi.widget,boundary_widget);
  field(owner+element_map,registry);field(registry+0xf,entries);field(registry+0x13,4);
@@ -85,6 +89,8 @@ void test_icon_global_key(){
  check(icon,copy,1,1);
  check(icon,icon,0,0);
  check(copy,icon,1,0);
+ check(icon,dock,1,1);
+ check(dock,icon,1,1);
  field(icon_widget+abi.controller,sentinel);check(icon,copy,0,0);
  field(icon_widget+abi.controller,controller);
  // Another GlobalKey on the same subtree keeps stock reparenting.
@@ -92,7 +98,7 @@ void test_icon_global_key(){
  field(controller+abi.capture_key,key);
  abi.icon_build=0;check(icon,copy,0,0);
  abi={};element_map=0;
- puts("PASS icon GlobalKey retake and registration distinguish attached owners, copies and detached holders");
+ puts("PASS icon GlobalKey retake and registration distinguish attached owners, other attached icons, copies and detached holders");
 }
 }
 extern "C" bool hg_page_guard_ready(){
@@ -267,8 +273,23 @@ int main(){
  field(physical+15,1200.0);
  export_dispatch(registers);
  assert(mounted_captures.empty()&&resting_layers.size()<=1);
+ // A second FlutterView, such as the tablet dock, reports its own size on
+ // the same thread. It must not clear the Home view's placements.
+ const auto dock_layer=arena+0x1001,dock_view=arena+0x1041,dock_config=arena+0x1081,
+            dock_physical=arena+0x10c1,dock_matrix=arena+0x1101,dock_storage=arena+0x1141;
+ field(dock_layer-1,capture[2]<<12);field(dock_layer+0x2b,uint32_t(dock_view));
+ field(dock_view+0x5b,uint32_t(dock_config));field(dock_config+0xb,uint32_t(dock_physical));
+ field(dock_physical+15,1880.0);field(dock_physical+31,320.0);
+ field(dock_layer+0x53,uint32_t(dock_matrix));field(dock_matrix+7,uint32_t(dock_storage));
+ field(dock_storage+0x17,transform);
+ remember_mounted_capture({HgCapturePlacement{10,20,2.85,2.85,60,60,0,1200,2436},registers[25],source,1234,0,0});
+ for(int i=0;i<3;i++){
+  registers[1]=dock_layer;export_dispatch(registers);
+  registers[1]=layer;export_dispatch(registers);
+ }
+ assert(mounted_captures.size()==1&&mounted_captures.front().placement.viewport_width==1200);
  test_viewport=nullptr;original_dispatch=nullptr;test_capture_queue=false;
- puts("PASS workspace scrolling preserves resting captures, recovers scrolled openings and invalidates on viewport resize");
+ puts("PASS workspace scrolling preserves resting captures, recovers scrolled openings and invalidates on viewport resize per view");
  // Each child starts with the real runtime's uncached setting. Failed reads
  // must keep the worker pending; storage recovery must install the badge group.
  for(int scenario=0;scenario<6;scenario++){

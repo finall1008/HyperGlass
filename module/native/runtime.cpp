@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cerrno>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -38,7 +39,11 @@ struct RestingLayer {
 constexpr size_t max_mounted_captures=32,max_resting_layers=256;
 thread_local std::vector<MountedCapture> mounted_captures;
 thread_local std::vector<RestingLayer> resting_layers;
-thread_local unsigned last_viewport_width=0,last_viewport_height=0;
+// Physical size per FlutterView. A tablet's dock is a second view on the same
+// UI thread, so alternating views must not clear each other's placements.
+struct ViewportSize {uintptr_t view;unsigned width,height;};
+constexpr size_t max_viewports=8;
+thread_local std::vector<ViewportSize> viewport_sizes;
 thread_local bool overview_entered=false,workspace_scrolling=false,home_scene_ready=true;
 thread_local unsigned resting_snapshot_retries=12;
 template<class T> T dart_value(uintptr_t address){
@@ -197,6 +202,28 @@ int badge_monochrome(){
 }
 struct ImageState { uintptr_t base=0;std::string path;hg::Resolved result;bool attempted=false; };
 std::array<ImageState,3> images;
+// The engine maps libapp and then creates the root isolate group. Dart code
+// that runs before the libapp batch lands builds state the adapters never see,
+// such as the tablet dock's icons. Isolate creation waits for that batch.
+std::atomic<bool> app_mapped{false},app_settled{false};
+using CreateGroup=uintptr_t(*)(uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t);
+CreateGroup original_create_group=nullptr;
+uintptr_t create_group_gate(uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d,uintptr_t e,uintptr_t f,uintptr_t g,uintptr_t h){
+ using namespace std::chrono;
+ const auto start=steady_clock::now();
+ while(!app_settled.load(std::memory_order_acquire)){
+  const auto waited=steady_clock::now()-start;
+  // The snapshot arguments already point into libapp. A mapping the worker
+  // still has not recognized after its polling interval will not settle.
+  if((!app_mapped.load(std::memory_order_acquire)&&waited>=milliseconds(300))||waited>=milliseconds(2000)){
+   LOG("Dart startup gate released before libapp adapters settled (mapped=%d)",app_mapped.load()?1:0);break;
+  }
+  usleep(2000);
+ }
+ static std::atomic<bool> reported{false};
+ if(!reported.exchange(true))LOG("Dart startup gate waited %lld ms",(long long)duration_cast<milliseconds>(steady_clock::now()-start).count());
+ return original_create_group(a,b,c,d,e,f,g,h);
+}
 
 std::string_view dart_enum_name(uintptr_t type,uintptr_t heap,uintptr_t nil){
  if(!(type&1)||type==nil)return {};
@@ -246,9 +273,21 @@ void observe_viewport_density(const uintptr_t*r){
  double width=dart_value<double>(physical+config[13]),height=dart_value<double>(physical+config[14]);
  if(!(width>=1&&width<=16383&&height>=1&&height<=16383))return;
  const unsigned vw=unsigned(width),vh=unsigned(height);
- if(vw!=last_viewport_width||vh!=last_viewport_height){
-  last_viewport_width=vw;last_viewport_height=vh;
-  mounted_captures.clear();resting_layers.clear();
+ auto known=std::find_if(viewport_sizes.begin(),viewport_sizes.end(),[&](const ViewportSize&item){return item.view==view;});
+ if(known==viewport_sizes.end()){
+  if(viewport_sizes.size()>=max_viewports)viewport_sizes.erase(viewport_sizes.begin());
+  viewport_sizes.push_back({view,vw,vh});
+  resting_snapshot_retries=12;
+ }else if(known->width!=vw||known->height!=vh){
+  // A resized view drops only the placements recorded at its former size.
+  const unsigned old_width=known->width,old_height=known->height;
+  known->width=vw;known->height=vh;
+  mounted_captures.erase(std::remove_if(mounted_captures.begin(),mounted_captures.end(),[&](const MountedCapture&item){
+   return item.placement.viewport_width==old_width&&item.placement.viewport_height==old_height;
+  }),mounted_captures.end());
+  resting_layers.erase(std::remove_if(resting_layers.begin(),resting_layers.end(),[&](const RestingLayer&item){
+   return item.viewport_width==old_width&&item.viewport_height==old_height;
+  }),resting_layers.end());
   resting_snapshot_retries=12;
  }
  uintptr_t matrix=ref(layer,0x53);
@@ -327,9 +366,11 @@ bool mounted_key(const DartMapEntries&elements,uint32_t key){
 }
 // A Hero flight builds copies of an icon's subtree in its overlay shuttle and
 // in MultiFlyUnderlay, outside the ShortcutIconWidget that owns the capture
-// GlobalKey. GlobalKey reparenting would move the one keyed boundary between
-// those copies and leave the visible one empty. Keep a boundary in place while
-// its element is attached, and keep the attached icon's registration.
+// GlobalKey. The tablet dock also shows a controller that another attached
+// ShortcutIconWidget uses. GlobalKey reparenting would move the one
+// keyed boundary between them and leave the visible one empty. Keep a boundary
+// in place while its element is attached, and keep the attached icon's
+// registration; moves inside one icon keep stock reparenting.
 struct IconKeyScope {
  const hg::IconRetakeLayout&abi;
  uintptr_t heap,nil,dispatch,sentinel;
@@ -345,16 +386,17 @@ struct IconKeyScope {
  }
  // The nearest ShortcutIconWidget ancestor decides. Its class dispatches
  // build to ShortcutIconWidget.build; only then is its controller read.
- bool owns(uintptr_t element,uintptr_t key)const{
+ // Returns that icon element when its controller owns the key.
+ uintptr_t owner(uintptr_t element,uintptr_t key)const{
   for(unsigned depth=0;depth<64&&object(element);depth++,element=ref(element,abi.parent)){
    const uintptr_t widget=ref(element,abi.widget);
    if(!object(widget))continue;
    const uintptr_t cid=dart_value<uint32_t>(widget-1)>>12;
    if(dart_value<uintptr_t>(dispatch+8*(cid+abi.build_selector))!=abi.icon_build)continue;
    const uintptr_t controller=ref(widget,abi.controller);
-   return object(controller)&&controller!=sentinel&&ref(controller,abi.capture_key)==key;
+   return object(controller)&&controller!=sentinel&&ref(controller,abi.capture_key)==key?element:0;
   }
-  return false;
+  return 0;
  }
 };
 IconKeyScope icon_key_scope(const uintptr_t*r){
@@ -374,7 +416,8 @@ uintptr_t keep_icon_boundary(uintptr_t*r){
  const uintptr_t live=scope.root(element);
  if(!scope.object(key)||!live||scope.root(holder)!=live)return 0;
  // Only the icon capture key is guarded; other GlobalKeys keep stock moves.
- return scope.owns(element,key)!=scope.owns(holder,key);
+ const uintptr_t from=scope.owner(holder,key),to=scope.owner(element,key);
+ return (from||to)&&from!=to;
 }
 // Element.mount: x2 is the GlobalKey and FP-8 the element. Its BuildOwner is
 // loaded from the element after this class-range test.
@@ -395,7 +438,8 @@ uintptr_t keep_icon_registration(uintptr_t*r){
  if(!scope.object(holder)||holder==element)return 0;
  const uintptr_t live=scope.root(element);
  if(!live||scope.root(holder)!=live)return 0;
- return scope.owns(holder,key)&&!scope.owns(element,key);
+ const uintptr_t attached=scope.owner(holder,key);
+ return attached&&scope.owner(element,key)!=attached;
 }
 void select_maml_repaint_key(uintptr_t*r){
  const auto&abi=images[0].result.maml_repaint;
@@ -472,7 +516,7 @@ void find_images(){
    if(item==layouts.end()){Layout layout;std::string error;layout.valid=hg::image_layout(path.c_str(),layout.segments,layout.offset,error);item=layouts.emplace(path,std::move(layout)).first;}
    const auto&layout=item->second;
    if(!layout.valid||m.offset!=layout.offset||!executable_mapping(m.begin,m.path,layout,maps))continue;
-   images[i].base=m.begin;images[i].path=path;break;
+   images[i].base=m.begin;images[i].path=path;if(i==0)app_mapped.store(true,std::memory_order_release);break;
   }
  }
 }
@@ -489,6 +533,13 @@ extern "C" unsigned hg_runtime_tick(const char*phase){
   hg::resolve_program(s.path.c_str(),s.base,*hg_programs[i],s.result);
   LOG("RESOLVED image=%s features=%u sites=%zu diagnostic=%s",hg_programs[i]->image,s.result.ready,s.result.patches.size(),s.result.diagnostic.c_str());
 
+ }
+ static bool gate_attempted=false;
+ if(!gate_attempted&&images[1].result.isolate_group_entry&&!images[0].attempted){
+  gate_attempted=true;
+  if(hg_install_native_hook((void*)images[1].result.isolate_group_entry,(void*)create_group_gate,(void**)&original_create_group)!=0||!original_create_group){
+   original_create_group=nullptr;LOG("Dart startup gate unavailable");
+  }
  }
  // Marked Dart exports and their native scheduler share one commit batch.
  bool snapshots=(images[0].result.ready&2)&&(images[1].result.ready&2);
@@ -518,6 +569,7 @@ extern "C" unsigned hg_runtime_tick(const char*phase){
  if(rc>=0 && (ready&8))hg_install_resources();
  bool all_attempted=std::all_of(images.begin(),images.end(),[](const ImageState&s){return s.attempted;});
  bool snapshots_pending=(images[0].result.ready&2)&&(images[1].result.ready&2)&&!snapshots;
+ if(images[0].attempted&&!snapshots_pending&&(rc>=0||rc==-4))app_settled.store(true,std::memory_order_release);
  if(all_attempted&&!snapshots_pending&&!settings_pending&&(rc>=0||rc==-4))runtime_complete.store(true,std::memory_order_release);
  return rc>=0?ready:0;
 }
